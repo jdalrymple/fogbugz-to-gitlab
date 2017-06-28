@@ -1,0 +1,409 @@
+let CONFIGURATION_USER = {
+  "authentication": {
+    "fogbugz": {
+      "url": "http://support.jonar.com/support/",
+      "user": "dylan@jonar.com",
+      "password": "jonar$1986"
+    },
+    "gitlab": {
+      "token": "JdHABfmRWBRvjemmhZnq"
+    }
+  },
+  "gitlab_project":{
+    "name": "testproject2",
+    "description": "boring description",
+    "issued_enabled": true
+  },
+  "fogbugz_project":{
+    "name": "Side Projects",
+    "exclude":{
+      "categories": ['Task'] // Add default empty string for this
+    }
+  }
+}
+
+const CONFIGURATION_DEFAULT = {
+  authentication: CONFIGURATION_USER.authentication,
+  gitlab_project:{
+      name: CONFIGURATION_USER.gitlab_project.name || 'New Gitlab Project',
+      description: CONFIGURATION_USER.gitlab_project.description || 'My Gitlab Project',
+      issues_enabled: CONFIGURATION_USER.gitlab_project.issues_enabled || true,
+      merge_requests_enabled: CONFIGURATION_USER.gitlab_project.merge_requests_enabled || true,
+      wiki_enabled: CONFIGURATION_USER.gitlab_project.wiki_enabled || false,
+  },
+  fogbugz_project:{
+    name:CONFIGURATION_USER.fogbugz_project.name,
+    exclude :{
+      categories: CONFIGURATION_USER.fogbugz_project.exclude.categories  || []
+    }
+  }
+}
+
+const FogbugzJS = require('fogbugz.js');
+const Promise = require('bluebird');
+const Gitlab = require('node-gitlab-api');
+
+let FogbugzAPI;
+let GitlabAPI;
+
+/*---------------------------------- Cache ----------------------------------*/
+// All Fogbugs Users
+let FBUsers = [];
+
+// Cached GitLab User
+let AdminUser;
+
+// Cached GitLab Labels
+let GLLabels = [];
+
+// Cached GitLab Milestones
+let GLMilestones = [];
+
+// Cached GitLab issues_enabled
+let GLIssues = [];
+
+// Cached GitLab projects
+let GLProject;
+
+/*--------------------------------- Import ----------------------------------*/
+initAPIandCache()
+.then(importProject)
+
+/*--------------------------------- Helper ----------------------------------*/
+
+async function importProject(){
+
+  // Create the GL Project
+  // await GitlabAPI.projects.create({
+  //   name: CONFIGURATION_DEFAULT.gitlab_project.name,
+  //   description: CONFIGURATION_DEFAULT.gitlab_project.description,
+  //   issues_enabled: CONFIGURATION_DEFAULT.gitlab_project.issues_enabled,
+  //   merge_requests_enabled: CONFIGURATION_DEFAULT.gitlab_project.merge_requests_enabled,
+  //   wiki_enabled: CONFIGURATION_DEFAULT.gitlab_project.wiki_enabled,
+  // })
+
+  // Set GLProject
+  GLProject = await GitlabAPI.projects.show(AdminUser.username + "/" + CONFIGURATION_USER.gitlab_project.name);
+
+  // Populate Caches for testing purposes
+  await populateCache()
+
+  //Get the cases from FB for the FB Project being imported
+  let baseQueryString = `project:"${CONFIGURATION_DEFAULT.fogbugz_project.name}"`;
+
+  // //Exclude certain categories
+  CONFIGURATION_DEFAULT.fogbugz_project.exclude.categories.forEach(category => {
+    baseQueryString += `category:"${category}"`;
+  })
+
+  baseQueryString += `orderby:"case"`;
+
+  //Paginate
+  let moreToProcess = true;
+  let processDate = new Date(Date.now()).toLocaleDateString("en-US");
+  let caseNumber = "0";
+  let queryString = baseQueryString + `case:"${caseNumber}.."`;
+
+// Test case
+  // queryString = `case:"144813"`
+
+  while (moreToProcess) {
+    let cases = await FogbugzAPI.search(queryString, 100, false);
+
+    for (data of cases){
+
+      await importCase(data)
+    }
+
+    caseNumber = cases[cases.length-1].id + 1
+    queryString = baseQueryString + `case:"${caseNumber}.."`;
+    moreToProcess = (cases.length < 100) ? false : true;
+    // moreToProcess =  false;
+  }
+}
+
+async function initAPIandCache(){
+  FogbugzAPI = await FogbugzJS(CONFIGURATION_DEFAULT.authentication.fogbugz);
+  GitlabAPI = await Gitlab(CONFIGURATION_DEFAULT.authentication.gitlab);
+  FBUsers = await getAllFogbugzUsers();
+  AdminUser = await GitlabAPI.users.current();
+}
+
+async function getAllFogbugzUsers(){
+  let users = await FogbugzAPI.users();
+
+  return users.filter(user => { return user.deleted === false });
+}
+
+
+async function importCase(data) {
+  let labels = []
+  let labelInfo = [data.category, data.priority];
+  let author = AdminUser.username
+  let date = data.opened;
+  let comments = data.events;
+  let content = getOpenedComment(comments);
+  let body = formatIssueBody(date.toDateString(), content, data.assignee.name);
+
+  // If post is up for grabs or whatever add a label showing that
+  if (labelCheck(data)) labelInfo.push(data.assignee)
+
+  for (fogbugzLabel of labelInfo){
+    if (fogbugzLabel) labels.push(await getLabel(fogbugzLabel.name));
+  }
+
+  let issue = GLIssues.find(Issue => Issue.title.trim() === data.title.trim());
+
+  if(!issue){
+    issue = await GitlabAPI.projects.issues.create( GLProject.id, {
+        title: data.title,
+        description: body,
+        author_id: author,
+        state: data.isOpen == 'true' ? 'opened':'closed',
+        milestone_id: await getMilestone(data.milestone).id,
+        created_at: date,
+        updated_at: Date.parse(data.lastUpdated),
+        labels: labels.map(label => label.name).join(',')
+    });
+
+    // Populate Cache
+    GLIssues.push(issue);
+
+    for (comment of comments){
+      await importIssueComment(issue.id, comment)
+    }
+  }
+}
+
+async function populateCache(){
+  let temp = await GitlabAPI.labels.all(GLProject.id);
+  GLLabels = temp;
+  temp = await GitlabAPI.projects.milestones.all(GLProject.id);
+  GLMilestones = temp;
+  temp = await GitlabAPI.projects.issues.all(GLProject.id);
+  GLIssues = temp
+}
+
+async function importIssueComment(issueId, comment) {
+  let verb = comment.verb;
+
+  if (verb === "Opened") return;
+
+  let content = formatContent(comment.text)
+  console.log(comment);
+  console.log(issueId);
+  // let attachments = formatAttachments(comment.attachments)
+  // let updates = formatUpdates(comment)
+  //
+  // if (!content && !attachments.length && !updates.length) return;
+  //
+  // let author = getUser(comment.person.id).name;      // NOT USED ANYMORE
+  // let author_id = getUser(comment.person.id).id || GLProject.creator_id    // NOT USED ANYMORE
+  // let date = DateTime.parse(comment.date);
+  //
+  // let body = formatIssueCommentBody(
+  //   comment.id,
+  //   author,
+  //   date,
+  //   content,
+  //   attachments,
+  //   updates
+  // )
+  //
+  // await GitlabAPI.Notes.create({
+  //   projectId: project.id,
+  //   issueId: issue.id,
+  //   params: {
+  //     created_at: date,
+  //     updated_at: date,
+  //     author_id: author_id,
+  //     note: body
+  //   }
+  // });
+}
+
+async function getLabel(fogbugsLabelName){
+  let label = GLLabels.find(label => label.name === fogbugsLabelName);
+
+  if(!label){
+      let glLabel = await GitlabAPI.labels.create( GLProject.id, {
+          name: fogbugsLabelName,
+          color: labelColours(fogbugsLabelName)
+      });
+
+      GLLabels.push(glLabel);
+
+      label = glLabel;
+  }
+
+  return label;
+}
+
+async function labelCheck(data){
+  return ((data.name === 'Up For Grabs') || (data.name === 'CLOSED'))
+}
+
+
+async function getMilestone(fogbugzMilestone){
+  let milestone = GLMilestones.find(milestone => milestone.title === fogbugzMilestone.name);
+
+  if(!milestone){
+    let GLMilestone = await GitlabAPI.projects.milestones.add(GLProject.id, fogbugzMilestone.name, {
+        due_date: Date.parse(fogbugzMilestone.end)
+    });
+
+    GLMilestones.push(GLMilestone);
+
+    milestone = GLMilestone;
+  }
+
+  return milestone;
+}
+
+function getOpenedComment(comments) {
+  return comments.find((comment) =>
+    comment.verb === "Opened"
+  )
+}
+
+function formatContent(content){
+  if(!content) return '';
+
+  return linkifyIssues(escapeMarkdown(content))
+}
+
+function formatIssueBody(date, content, assignee){
+  let body = [];
+  body.push(`*${content.description} on ${date} (imported from FogBugz)*`);
+  body.push('---');
+
+  if(labelCheck(assignee)) {
+    body.push(`*Assigned to ${assignee} at the time of port*`);
+  }
+
+  if (content.text === ''){
+    body.push(`*(No description has been entered for this issue)*`);
+  }
+  else {
+    body.push(formatContent(content.text));
+  }
+
+  return body.join("\n\n");
+}
+
+// function formatAttachments(attachments){
+//   if(!attachments) return [];
+
+//   let raw_attachments;
+
+//   switch(instanceof attachments['attachment']){
+//     case Array:
+//       raw_attachments = attachments['attachment'];
+//       break;
+//     default:
+//       raw_attachments = [attachments['attachment']];
+//       break;
+//   }
+
+//   raw_attachments = raw_attachments.map(attachment => formatAttachment(attachment));
+
+//   return raw_attachments.filter(n => { return n != undefined });
+// }
+
+// async function formatAttachment(attachment){
+//   let url = buildAttachmentURL(attachment.sURL);
+
+//   await let res = GitlabAPI.Projects.upload({
+//     projectId: GLProject.id,
+//     file: url
+//   })
+
+//   if(!res) return null;
+
+//   return res.markdown;
+// }
+
+// function buildAttachmentURL(url){
+//   return `${configuration.athentication.fogbugz.url}/${url}&token=${FogbugzAPI.token}`
+// }
+
+// function formatUpdates(updates, comment){
+//   let updates = []
+
+//   if (comment.hasChanges) updates.push(`*Changes: ${linkifyIssues(comment.changes)}*`);
+//   if (comment.eventDescription) updates.push(`*${comment.eventDescription}*`;
+
+//   return updates;
+// }
+
+// function formatIssueCommentBody(author, date, content, attachments, updates){
+//   let body = [];
+//   body.push("*By #{author} on #{date} (imported from FogBugz)*");
+//   body.push('---');
+
+//   if (!content){
+//     content = '*(No comment has been entered for this change)*';
+//   }
+
+//   body.push(content);
+
+//   if (!updates.any){
+//     body.push('---');
+//     body.push(updates);
+//   }
+
+//   if (!attachments.any){
+//     body.push('---');
+//     body.push(attachments);
+//   }
+
+//   return body.join("\n\n");
+// }
+
+function linkifyIssues(str){
+  str = str.replace(/([Ii]ssue) ([0-9]+)/, '\1 #\2');
+  return str.replace(/([Cc]ase) ([0-9]+)/, '\1 #\2');
+}
+
+function escapeMarkdown(str){
+  str = str.replace(/^#/, "\\#")
+  str = str.replace(/^-/, "\\-")
+  str = str.replace("`", "\\~")
+  str = str.replace("\r", "")
+
+  return str.replace("\n", "  \n")
+}
+
+function createUserName(name) {
+  let splitName = name.split(" ")
+  let firstName = splitName[0];
+  let lastName = splitName.length > 1 ? splitName[splitName.length - 1] : ''
+
+  return (firstName.charAt(0) + lastName).toLowerCase()
+}
+
+function labelColours(name){
+  switch(name){
+    case 'Blocker':
+      return '#ff0000';
+    case 'Crash':
+      return '#ffcfcf';
+    case 'Major':
+    case 'Epic':
+      return '#deffcf';
+    case 'Minor':
+      return '#cfe9ff';
+    case 'Bug':
+      return '#d9534f';
+    case 'Feature':
+    case 'User Story':
+      return '#44ad8e';
+    case 'Technical Task':
+    case 'Technical Debt':
+      return '#4b6dd0';
+    case 'Research Spike':
+      return '#ff00ff';
+    default:
+      return '#e2e2e2';
+  }
+}
