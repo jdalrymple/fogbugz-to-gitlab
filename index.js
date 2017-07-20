@@ -1,3 +1,5 @@
+let temp_title = "testproject" + Math.floor(Math.random() * 200)
+
 let CONFIGURATION_USER = {
   "authentication": {
     "fogbugz": {
@@ -10,7 +12,7 @@ let CONFIGURATION_USER = {
     }
   },
   "gitlab_project":{
-    "name": "testproject2",
+    "name": temp_title,
     "description": "boring description",
     "issued_enabled": true
   },
@@ -74,13 +76,13 @@ initAPIandCache()
 async function importProject(){
 
   // Create the GL Project
-  // await GitlabAPI.projects.create({
-  //   name: CONFIGURATION_DEFAULT.gitlab_project.name,
-  //   description: CONFIGURATION_DEFAULT.gitlab_project.description,
-  //   issues_enabled: CONFIGURATION_DEFAULT.gitlab_project.issues_enabled,
-  //   merge_requests_enabled: CONFIGURATION_DEFAULT.gitlab_project.merge_requests_enabled,
-  //   wiki_enabled: CONFIGURATION_DEFAULT.gitlab_project.wiki_enabled,
-  // })
+  await GitlabAPI.projects.create({
+    name: CONFIGURATION_DEFAULT.gitlab_project.name,
+    description: CONFIGURATION_DEFAULT.gitlab_project.description,
+    issues_enabled: CONFIGURATION_DEFAULT.gitlab_project.issues_enabled,
+    merge_requests_enabled: CONFIGURATION_DEFAULT.gitlab_project.merge_requests_enabled,
+    wiki_enabled: CONFIGURATION_DEFAULT.gitlab_project.wiki_enabled,
+  })
 
   // Set GLProject
   GLProject = await GitlabAPI.projects.show(AdminUser.username + "/" + CONFIGURATION_USER.gitlab_project.name);
@@ -162,7 +164,7 @@ async function importCase(data) {
         state: data.isOpen == 'true' ? 'opened':'closed',
         milestone_id: await getMilestone(data.milestone).id,
         created_at: date,
-        updated_at: Date.parse(data.lastUpdated),
+        updated_at: data.lastUpdated,
         labels: labels.map(label => label.name).join(',')
     });
 
@@ -170,7 +172,7 @@ async function importCase(data) {
     GLIssues.push(issue);
 
     for (comment of comments){
-      await importIssueComment(issue.id, comment)
+        await importIssueComment(issue.iid, comment)
     }
   }
 }
@@ -186,40 +188,31 @@ async function populateCache(){
 
 async function importIssueComment(issueId, comment) {
   let verb = comment.verb;
-
   if (verb === "Opened") return;
 
   let content = formatContent(comment.text)
-  console.log(comment);
-  console.log(issueId);
+  let updates = formatUpdates(comment)
   // let attachments = formatAttachments(comment.attachments)
-  // let updates = formatUpdates(comment)
-  //
+
   // if (!content && !attachments.length && !updates.length) return;
+  if(!content && !updates.length) return;
   //
   // let author = getUser(comment.person.id).name;      // NOT USED ANYMORE
   // let author_id = getUser(comment.person.id).id || GLProject.creator_id    // NOT USED ANYMORE
-  // let date = DateTime.parse(comment.date);
+  let date = comment.date.toDateString()
   //
-  // let body = formatIssueCommentBody(
-  //   comment.id,
-  //   author,
-  //   date,
-  //   content,
-  //   attachments,
-  //   updates
-  // )
-  //
-  // await GitlabAPI.Notes.create({
-  //   projectId: project.id,
-  //   issueId: issue.id,
-  //   params: {
-  //     created_at: date,
-  //     updated_at: date,
-  //     author_id: author_id,
-  //     note: body
-  //   }
-  // });
+  let body = formatIssueCommentBody(
+    comment.id,
+    date,
+    content,
+    // attachments,
+    updates
+  )
+
+  await GitlabAPI.projects.issues.notes.create( GLProject.id, issueId, {
+      created_at: date,
+      body: body
+  });
 }
 
 async function getLabel(fogbugsLabelName){
@@ -249,7 +242,7 @@ async function getMilestone(fogbugzMilestone){
 
   if(!milestone){
     let GLMilestone = await GitlabAPI.projects.milestones.add(GLProject.id, fogbugzMilestone.name, {
-        due_date: Date.parse(fogbugzMilestone.end)
+        due_date: fogbugzMilestone.end.toDateString()
     });
 
     GLMilestones.push(GLMilestone);
@@ -293,9 +286,9 @@ function formatIssueBody(date, content, assignee){
 
 // function formatAttachments(attachments){
 //   if(!attachments) return [];
-
+//
 //   let raw_attachments;
-
+//
 //   switch(instanceof attachments['attachment']){
 //     case Array:
 //       raw_attachments = attachments['attachment'];
@@ -327,38 +320,40 @@ function formatIssueBody(date, content, assignee){
 //   return `${configuration.athentication.fogbugz.url}/${url}&token=${FogbugzAPI.token}`
 // }
 
-// function formatUpdates(updates, comment){
-//   let updates = []
+function formatUpdates(comment){
+  let updates = []
 
-//   if (comment.hasChanges) updates.push(`*Changes: ${linkifyIssues(comment.changes)}*`);
-//   if (comment.eventDescription) updates.push(`*${comment.eventDescription}*`;
+  if (comment.changes) updates.push(`*Changes: ${linkifyIssues(comment.changes)}*`);
+  if (comment.description) updates.push(`*${comment.description}*`);
 
-//   return updates;
-// }
+  return updates;
+}
 
-// function formatIssueCommentBody(author, date, content, attachments, updates){
-//   let body = [];
-//   body.push("*By #{author} on #{date} (imported from FogBugz)*");
-//   body.push('---');
+function formatIssueCommentBody(author, date, content, updates){
+  let body = [];
+  body.push(`*By ${author} on ${date} (imported from FogBugz)*`);
+  body.push('---');
 
-//   if (!content){
-//     content = '*(No comment has been entered for this change)*';
-//   }
+  if (!content){
+    content = '*(No comment has been entered for this change)*';
+  }
 
-//   body.push(content);
+  body.push(content);
 
-//   if (!updates.any){
-//     body.push('---');
-//     body.push(updates);
-//   }
+  if (!updates.any){
+    body.push('---');
+    for (update of updates) {
+      body.push(update);
+    }
+  }
 
-//   if (!attachments.any){
-//     body.push('---');
-//     body.push(attachments);
-//   }
+  // if (!attachments.any){
+  //   body.push('---');
+  //   body.push(attachments);
+  // }
 
-//   return body.join("\n\n");
-// }
+  return body.join("\n\n");
+}
 
 function linkifyIssues(str){
   str = str.replace(/([Ii]ssue) ([0-9]+)/, '\1 #\2');

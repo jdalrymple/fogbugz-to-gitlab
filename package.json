@@ -13,6 +13,6 @@
     "bluebird": "^3.5.0",
     "fogbugz.js": "0.0.33",
     "gitlab": "^1.7.1",
-    "node-gitlab-api": "^1.0.7"
+    "node-gitlab-api": "^1.0.10"
   }
 }
