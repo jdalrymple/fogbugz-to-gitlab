@@ -17,7 +17,8 @@ let CONFIGURATION_USER = {
     "issued_enabled": true
   },
   "fogbugz_project":{
-    "name": "Side Projects",
+    "name": "R&D",
+    // "name": "Side Projects",
     "exclude":{
       "categories": ['Task'] // Add default empty string for this
     }
@@ -43,7 +44,7 @@ const CONFIGURATION_DEFAULT = {
 
 const FogbugzJS = require('fogbugz.js');
 const Promise = require('bluebird');
-const Gitlab = require('node-gitlab-api');
+const Gitlab = require('../node-gitlab-api');
 
 let FogbugzAPI;
 let GitlabAPI;
@@ -106,21 +107,24 @@ async function importProject(){
   let caseNumber = "0";
   let queryString = baseQueryString + `case:"${caseNumber}.."`;
 
-// Test case
+// Test cases
   // queryString = `case:"144813"`
+  queryString = `case:"108126"`
+
 
   while (moreToProcess) {
     let cases = await FogbugzAPI.search(queryString, 100, false);
 
     for (data of cases){
-
+      console.log("------------");
+      console.log(data);
       await importCase(data)
     }
 
     caseNumber = cases[cases.length-1].id + 1
     queryString = baseQueryString + `case:"${caseNumber}.."`;
-    moreToProcess = (cases.length < 100) ? false : true;
-    // moreToProcess =  false;
+    // moreToProcess = (cases.length < 100) ? false : true;
+    moreToProcess =  false;
   }
 }
 
@@ -145,7 +149,7 @@ async function importCase(data) {
   let date = data.opened;
   let comments = data.events;
   let content = getOpenedComment(comments);
-  let body = formatIssueBody(date.toDateString(), content, data.assignee.name);
+  let body = formatIssueBody(content.description, date.toDateString(), content, data.assignee.name, data.parentId, data.children);
 
   // If post is up for grabs or whatever add a label showing that
   if (labelCheck(data)) labelInfo.push(data.assignee)
@@ -163,7 +167,7 @@ async function importCase(data) {
         author_id: author,
         state: data.isOpen == 'true' ? 'opened':'closed',
         milestone_id: await getMilestone(data.milestone).id,
-        created_at: date,
+        created_at: date.toDateString(),
         updated_at: data.lastUpdated,
         labels: labels.map(label => label.name).join(',')
     });
@@ -187,22 +191,22 @@ async function populateCache(){
 }
 
 async function importIssueComment(issueId, comment) {
+  // console.log("----");
+  // console.log(comment);
   let verb = comment.verb;
   if (verb === "Opened") return;
 
+  let author = comment.person.name
   let content = formatContent(comment.text)
   let updates = formatUpdates(comment)
+  let date = comment.date.toDateString()
   // let attachments = formatAttachments(comment.attachments)
 
   // if (!content && !attachments.length && !updates.length) return;
   if(!content && !updates.length) return;
-  //
-  // let author = getUser(comment.person.id).name;      // NOT USED ANYMORE
-  // let author_id = getUser(comment.person.id).id || GLProject.creator_id    // NOT USED ANYMORE
-  let date = comment.date.toDateString()
-  //
+
   let body = formatIssueCommentBody(
-    comment.id,
+    author,
     date,
     content,
     // attachments,
@@ -265,21 +269,17 @@ function formatContent(content){
   return linkifyIssues(escapeMarkdown(content))
 }
 
-function formatIssueBody(date, content, assignee){
+function formatIssueBody(author, date, content, assignee, parentId, children){
   let body = [];
-  body.push(`*${content.description} on ${date} (imported from FogBugz)*`);
+  body.push(`*${author}*`);
+  if (parentId) { body.push(`*${parentId}*`) }
+  if (children) { body.push(`*${children}*`) }
   body.push('---');
 
-  if(labelCheck(assignee)) {
-    body.push(`*Assigned to ${assignee} at the time of port*`);
-  }
+  if(labelCheck(assignee)) { body.push(`*Assigned to ${assignee} at the time of port*`); }
 
-  if (content.text === ''){
-    body.push(`*(No description has been entered for this issue)*`);
-  }
-  else {
-    body.push(formatContent(content.text));
-  }
+  if (content.text === ''){ body.push(`*(No description has been entered for this issue)*`); }
+  else { body.push(formatContent(content.text)); }
 
   return body.join("\n\n");
 }
@@ -323,26 +323,35 @@ function formatIssueBody(date, content, assignee){
 function formatUpdates(comment){
   let updates = []
 
-  if (comment.changes) updates.push(`*Changes: ${linkifyIssues(comment.changes)}*`);
-  if (comment.description) updates.push(`*${comment.description}*`);
+  if (comment.changes) updates.push(`*${linkifyIssues(escapeMarkdown(comment.changes.replace("\n", "")))}*`);
+  // if (comment.description) updates.push(`*${comment.description}*`);
 
   return updates;
 }
 
+// function formatIssueCommentBody(author, date, content, attachment, updates){
 function formatIssueCommentBody(author, date, content, updates){
+  // console.log("------------------------------");
+  // console.log(author);
+  // console.log(date);
+  // console.log(content);
+  // console.log(updates);
+
   let body = [];
-  body.push(`*By ${author} on ${date} (imported from FogBugz)*`);
+  body.push(`**By ${author} on ${date} (imported from FogBugz)**`);
   body.push('---');
 
-  if (!content){
-    content = '*(No comment has been entered for this change)*';
+  if (content){
+    body.push(content);
   }
 
-  body.push(content);
+  // console.log("UPDATES:");
+  // console.log(updates);
 
-  if (!updates.any){
-    body.push('---');
+  if (updates != undefined && updates.length > 0){
+    if(content) body.push('---');
     for (update of updates) {
+      // console.log(update);
       body.push(update);
     }
   }
@@ -367,14 +376,6 @@ function escapeMarkdown(str){
   str = str.replace("\r", "")
 
   return str.replace("\n", "  \n")
-}
-
-function createUserName(name) {
-  let splitName = name.split(" ")
-  let firstName = splitName[0];
-  let lastName = splitName.length > 1 ? splitName[splitName.length - 1] : ''
-
-  return (firstName.charAt(0) + lastName).toLowerCase()
 }
 
 function labelColours(name){
