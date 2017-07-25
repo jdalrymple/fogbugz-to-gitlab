@@ -3,12 +3,12 @@ let temp_title = "testproject" + Math.floor(Math.random() * 200)
 let CONFIGURATION_USER = {
   "authentication": {
     "fogbugz": {
-      "url": "http://support.jonar.com/support/",
-      "user": "dylan@jonar.com",
-      "password": "jonar$1986"
+      "url": "",
+      "user": "",
+      "password": ""
     },
     "gitlab": {
-      "token": "JdHABfmRWBRvjemmhZnq"
+      "token": ""
     }
   },
   "gitlab_project":{
