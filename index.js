@@ -336,36 +336,33 @@ function formatAttachments(attachments){
 
   let raw_attachments;
 
-  switch(instanceof attachments['attachment']){
-    case Array:
-      raw_attachments = attachments['attachment'];
-      break;
-    default:
-      raw_attachments = [attachments['attachment']];
-      break;
-  }
+  // switch((instanceof attachments['attachment'])){
+  //   case Array:
+  //     raw_attachments = attachments['attachment'];
+  //     break;
+  //   default:
+  //     raw_attachments = [attachments['attachment']];
+  //     break;
+  // }
 
   raw_attachments = raw_attachments.map(attachment => formatAttachment(attachment));
 
   return raw_attachments.filter(n => { return n != undefined });
 }
-//
-// async function formatAttachment(attachment){
-//   let url = buildAttachmentURL(attachment.sURL);
-//
-//   await let res = GitlabAPI.Projects.upload({
-//     projectId: GLProject.id,
-//     file: url
-//   })
-//
-//   if(!res) return null;
-//
-//   return res.markdown;
-// }
-//
-// function buildAttachmentURL(url){
-//   return `${configuration.athentication.fogbugz.url}/${url}&token=${FogbugzAPI.token}`
-// }
+
+async function formatAttachment(attachment){
+  let url = buildAttachmentURL(attachment.sURL);
+
+  let res = await GitlabAPI.Projects.upload(GLProject.id, url)
+
+  if(!res) return null;
+
+  return res.markdown;
+}
+
+function buildAttachmentURL(url){
+  return `${configuration.athentication.fogbugz.url}/${url}&token=${FogbugzAPI.token}`
+}
 
 function formatUpdates(comment){
   let updates = []
@@ -384,9 +381,9 @@ function formatIssueCommentBody(author, date, content){
   body.push('---');
   body.push(content);
 
-  // if (!attachments.any){
+  // for (attachment of attachments){
   //   body.push('---');
-  //   body.push(attachments);
+  //   body.push(attachment);
   // }
 
   return body.join("\n\n");
