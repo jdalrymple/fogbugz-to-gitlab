@@ -8,7 +8,7 @@ let CONFIGURATION_USER = {
       "password": "jonar$1986"
     },
     "gitlab": {
-      "token": "LzWPyuuiPnmkCzjD_Fbs"
+      "token": "4p6hzwnFe2dkCoozfwfL"
     }
   },
   "gitlab_project":{
@@ -75,6 +75,7 @@ let GLProject;
 try{
   initAPIandCache()
   .then(importProject)
+  .then(cleanMilestones)
 }catch(e){
   console.log(e);
 }
@@ -125,12 +126,8 @@ async function importProject(){
     let cases = await FogbugzAPI.search(queryString, 100, false);
 
     for (data of cases){
-      try{
-        console.log(data)
+      console.log(data)
       await importCase(data)
-    }catch(e){
-      console.log(e);
-    }
     }
 
     caseNumber = cases[cases.length-1].id + 1
@@ -164,26 +161,16 @@ async function getAllFogbugzUsers(){
 
 async function importCase(data) {
   let labels = []
-  let labelInfo = [data.category, data.priority];
+  let labelList = buildLabels(data)
   let author = AdminUser.username
   let date = data.opened;
   let comments = data.events;
   let content = getOpenedComment(comments);
   let body = formatIssueBody(data, content);
+  let milestoneId =  await getMilestone(data.milestone);
 
-  // If post is up for grabs or whatever add a label showing that
-  // if (labelCheck(data.assignee.name)) { labelInfo.push(data.assignee.name) }
-  if (data.nextxsprint) labelInfo.push("Next Sprint")
-  if (data.nextxpoker) labelInfo.push("Next Poker")
-  if (data.storyxpoints) labelInfo.push("Points: " + data.storyxpoints)
-  if (data.tags.length) {
-    for (tag of data.tags){
-      labelInfo.push(tag)
-    }
-  }
-
-  for (fogbugzLabel of labelInfo){
-    if (fogbugzLabel) labels.push(await getLabel(fogbugzLabel.name));
+  for (label of labelList){
+    labels.push(await getLabel(label));
   }
 
   let issue = GLIssues.find(Issue => Issue.title.trim() === data.title.trim());
@@ -194,7 +181,7 @@ async function importCase(data) {
         description: body,
         author_id: author,
         state: data.isOpen == 'true' ? 'opened':'closed',
-        milestone_id: await getMilestone(data.milestone).id,
+        milestone_id: milestoneId.id,
         created_at: date.toDateString(),
         updated_at: data.lastUpdated,
         labels: labels.map(label => label.name).join(','),
@@ -218,6 +205,27 @@ async function populateCache(){
   GLMilestones = temp;
   temp = await GitlabAPI.projects.issues.all(GLProject.id);
   GLIssues = temp
+}
+
+function buildLabels(data){
+  let labelList = []
+
+  labelList.push(data.category.name)
+  if (data.tags.length) {
+    for (tag of data.tags){
+      labelList.push(tag)
+    }
+  }
+
+  for (let i = 0; i < labelList.length; i++) {
+    labelList[i] = labelList[i].charAt(0).toUpperCase() + labelList[i].slice(1).toLowerCase();
+  }
+
+  if (data.nextxsprint) labelList.push("Next Sprint")
+  if (data.nextxpoker) labelList.push("Next Poker")
+  if (data.storyxpoints) labelList.push(`Points: ${data.storyxpoints}`)
+
+  return labelList
 }
 
 async function importIssueComment(issueId, comment) {
@@ -275,6 +283,19 @@ async function getMilestone(fogbugzMilestone){
   return milestone;
 }
 
+async function cleanMilestones(){
+  let activeMilestones = ["Sprint 100",
+                          "Short-Term Product Backlog",
+                          "Product Backlog",
+                          "Special Projects Backlog"]
+
+  for (milestone of GLMilestones) {
+    if(activeMilestones.indexOf(milestone) == -1){
+      await GitlabAPI.projects.milestones.update(GLProject.id, milestone.id, {state_event: "close"})
+    }
+  }
+}
+
 function getOpenedComment(comments) {
   return comments.find((comment) =>
     comment.verb === "Opened"
@@ -304,44 +325,44 @@ function formatIssueBody(data, content){
   if (labelCheck(assignee)) { body.push(`*Assigned to ${assignee}*`); }
 
   if (content.text != '' || releaseNotes != '') body.push('---');
-  if (content.text != ''){ body.push(`formatContent(content.text)`); }
-  if (releaseNotes != ''){ body.push(`<br>Release Notes: *${formatContent(content.text)}*`); }
+  if (content.text != ''){ body.push(formatContent(content.text)); }
+  if (releaseNotes != ''){ body.push(`<br>**Release Notes** <br>*${formatContent(content.text)}*`); }
 
   return body.join("\n\n");
 }
 
-// function formatAttachments(attachments){
-//   if(!attachments) return [];
+function formatAttachments(attachments){
+  if(!attachments) return [];
+
+  let raw_attachments;
+
+  switch(instanceof attachments['attachment']){
+    case Array:
+      raw_attachments = attachments['attachment'];
+      break;
+    default:
+      raw_attachments = [attachments['attachment']];
+      break;
+  }
+
+  raw_attachments = raw_attachments.map(attachment => formatAttachment(attachment));
+
+  return raw_attachments.filter(n => { return n != undefined });
+}
 //
-//   let raw_attachments;
-//
-//   switch(instanceof attachments['attachment']){
-//     case Array:
-//       raw_attachments = attachments['attachment'];
-//       break;
-//     default:
-//       raw_attachments = [attachments['attachment']];
-//       break;
-//   }
-
-//   raw_attachments = raw_attachments.map(attachment => formatAttachment(attachment));
-
-//   return raw_attachments.filter(n => { return n != undefined });
-// }
-
 // async function formatAttachment(attachment){
 //   let url = buildAttachmentURL(attachment.sURL);
-
+//
 //   await let res = GitlabAPI.Projects.upload({
 //     projectId: GLProject.id,
 //     file: url
 //   })
-
+//
 //   if(!res) return null;
-
+//
 //   return res.markdown;
 // }
-
+//
 // function buildAttachmentURL(url){
 //   return `${configuration.athentication.fogbugz.url}/${url}&token=${FogbugzAPI.token}`
 // }
@@ -397,15 +418,19 @@ function labelColours(name){
     case 'Minor':
       return '#cfe9ff';
     case 'Bug':
-      return '#d9534f';
+      return '#F44336';
     case 'Feature':
+      return '#4CAF50';
     case 'User Story':
-      return '#44ad8e';
+      return '#3F51B5';
     case 'Technical Task':
+      return '#4CAF50';
     case 'Technical Debt':
       return '#4b6dd0';
     case 'Research Spike':
-      return '#ff00ff';
+      return '#009688';
+    case 'Task':
+      return '#2196F3'
     default:
       return '#e2e2e2';
   }
