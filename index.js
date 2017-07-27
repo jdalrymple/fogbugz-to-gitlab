@@ -21,7 +21,8 @@ let CONFIGURATION_USER = {
     // "name": "Side Projects",
     "exclude":{
       "categories": ['Task'] // Add default empty string for this
-    }
+    },
+    "custom_fields": ['storyxpoints', 'nextxsprint', 'nextxpoker',]
   }
 }
 
@@ -38,11 +39,12 @@ const CONFIGURATION_DEFAULT = {
     name:CONFIGURATION_USER.fogbugz_project.name,
     exclude :{
       categories: CONFIGURATION_USER.fogbugz_project.exclude.categories  || []
-    }
+    },
+    custom_fields: CONFIGURATION_USER.fogbugz_project.custom_fields || []
   }
 }
 
-const FogbugzJS = require('fogbugz.js');
+const FogbugzJS = require('../fogbugz.js');
 const Promise = require('bluebird');
 const Gitlab = require('../node-gitlab-api');
 
@@ -69,8 +71,14 @@ let GLIssues = [];
 let GLProject;
 
 /*--------------------------------- Import ----------------------------------*/
-initAPIandCache()
-.then(importProject)
+
+try{
+  initAPIandCache()
+  .then(importProject)
+}catch(e){
+  console.log(e);
+}
+
 
 /*--------------------------------- Helper ----------------------------------*/
 
@@ -109,8 +117,9 @@ async function importProject(){
 
 // Test cases
   // queryString = `case:"144813"`
-  queryString = `case:"108126"`
-
+  // queryString = `case:"108126"`
+  // queryString = `case:"127305"`
+  queryString = `case:"150371"`
 
   while (moreToProcess) {
     let cases = await FogbugzAPI.search(queryString, 100, false);
@@ -129,6 +138,9 @@ async function importProject(){
 }
 
 async function initAPIandCache(){
+  fogbugsConfig = Object.assign({} ,CONFIGURATION_DEFAULT.authentication.fogbugz);
+  fogbugsConfig.customFields = CONFIGURATION_DEFAULT.fogbugz_project.custom_fields;
+
   FogbugzAPI = await FogbugzJS(CONFIGURATION_DEFAULT.authentication.fogbugz);
   GitlabAPI = await Gitlab(CONFIGURATION_DEFAULT.authentication.gitlab);
   FBUsers = await getAllFogbugzUsers();
@@ -149,10 +161,18 @@ async function importCase(data) {
   let date = data.opened;
   let comments = data.events;
   let content = getOpenedComment(comments);
-  let body = formatIssueBody(content.description, date.toDateString(), content, data.assignee.name, data.parentId, data.children);
+  let body = formatIssueBody(data, content);
 
   // If post is up for grabs or whatever add a label showing that
-  if (labelCheck(data)) labelInfo.push(data.assignee)
+  // if (labelCheck(data.assignee.name)) { labelInfo.push(data.assignee.name) }
+  if (data.nextxsprint) labelInfo.push("Next Sprint")
+  if (data.nextxpoker) labelInfo.push("Next Poker")
+  if (data.storyxpoints) labelInfo.push("Points: " + data.storyxpoints)
+  if (data.tags.length) {
+    for (tag of data.tags){
+      labelInfo.push(tag)
+    }
+  }
 
   for (fogbugzLabel of labelInfo){
     if (fogbugzLabel) labels.push(await getLabel(fogbugzLabel.name));
@@ -169,13 +189,15 @@ async function importCase(data) {
         milestone_id: await getMilestone(data.milestone).id,
         created_at: date.toDateString(),
         updated_at: data.lastUpdated,
-        labels: labels.map(label => label.name).join(',')
+        labels: labels.map(label => label.name).join(','),
+        weight: data.priority.id
     });
 
     // Populate Cache
     GLIssues.push(issue);
 
     for (comment of comments){
+        if (!comment.text) continue
         await importIssueComment(issue.iid, comment)
     }
   }
@@ -191,27 +213,16 @@ async function populateCache(){
 }
 
 async function importIssueComment(issueId, comment) {
-  // console.log("----");
-  // console.log(comment);
-  let verb = comment.verb;
-  if (verb === "Opened") return;
 
   let author = comment.person.name
-  let content = formatContent(comment.text)
-  let updates = formatUpdates(comment)
+  let content = formatContent(comment.html)
   let date = comment.date.toDateString()
   // let attachments = formatAttachments(comment.attachments)
 
-  // if (!content && !attachments.length && !updates.length) return;
-  if(!content && !updates.length) return;
+  // if (!content && !attachments.length) return;
+  if(!content) return;
 
-  let body = formatIssueCommentBody(
-    author,
-    date,
-    content,
-    // attachments,
-    updates
-  )
+  let body = formatIssueCommentBody(author, date, content)
 
   await GitlabAPI.projects.issues.notes.create( GLProject.id, issueId, {
       created_at: date,
@@ -236,8 +247,8 @@ async function getLabel(fogbugsLabelName){
   return label;
 }
 
-async function labelCheck(data){
-  return ((data.name === 'Up For Grabs') || (data.name === 'CLOSED'))
+function labelCheck(info){
+  return (!((info === 'Up For Grabs') || (info === 'CLOSED')))
 }
 
 
@@ -269,17 +280,25 @@ function formatContent(content){
   return linkifyIssues(escapeMarkdown(content))
 }
 
-function formatIssueBody(author, date, content, assignee, parentId, children){
+function formatIssueBody(data, content){
+  let caseNumber = data.id
+  let author = content.description
+  let date = data.opened.toDateString()
+  let assignee = data.assignee.name
+  let parentId = data.parentId
+  let children = data.children
+  let releaseNotes = data.releaseNotes
+
   let body = [];
-  body.push(`*${author}*`);
-  if (parentId) { body.push(`*${parentId}*`) }
-  if (children) { body.push(`*${children}*`) }
-  body.push('---');
+  let header = `${author} | Case: ${caseNumber}`
+  body.push(`**${header}**`);
+  if (parentId) { body.push(`*Parent: ${parentId}*`) }
+  if (children[0]) { body.push(`*Children: ${children}*`) }
+  if (labelCheck(assignee)) { body.push(`*Assigned to ${assignee}*`); }
 
-  if(labelCheck(assignee)) { body.push(`*Assigned to ${assignee} at the time of port*`); }
-
-  if (content.text === ''){ body.push(`*(No description has been entered for this issue)*`); }
-  else { body.push(formatContent(content.text)); }
+  if (content.text != '' || releaseNotes != '') body.push('---');
+  if (content.text != ''){ body.push(`formatContent(content.text)`); }
+  if (releaseNotes != ''){ body.push(`<br>Release Notes: *${formatContent(content.text)}*`); }
 
   return body.join("\n\n");
 }
@@ -329,32 +348,13 @@ function formatUpdates(comment){
   return updates;
 }
 
-// function formatIssueCommentBody(author, date, content, attachment, updates){
-function formatIssueCommentBody(author, date, content, updates){
-  // console.log("------------------------------");
-  // console.log(author);
-  // console.log(date);
-  // console.log(content);
-  // console.log(updates);
-
+// function formatIssueCommentBody(author, date, content, attachment){
+function formatIssueCommentBody(author, date, content){
   let body = [];
+
   body.push(`**By ${author} on ${date} (imported from FogBugz)**`);
   body.push('---');
-
-  if (content){
-    body.push(content);
-  }
-
-  // console.log("UPDATES:");
-  // console.log(updates);
-
-  if (updates != undefined && updates.length > 0){
-    if(content) body.push('---');
-    for (update of updates) {
-      // console.log(update);
-      body.push(update);
-    }
-  }
+  body.push(content);
 
   // if (!attachments.any){
   //   body.push('---');
