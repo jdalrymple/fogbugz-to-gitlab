@@ -3,12 +3,12 @@ let temp_title = "testproject" + Math.floor(Math.random() * 200)
 let CONFIGURATION_USER = {
   "authentication": {
     "fogbugz": {
-      "url": "",
-      "user": "",
-      "password": ""
+      "url": "http://support.jonar.com/support/",
+      "user": "justin@jonar.com",
+      "password": "jamila"
     },
     "gitlab": {
-      "token": ""
+      "token": "LzWPyuuiPnmkCzjD_Fbs"
     }
   },
   "gitlab_project": {
@@ -116,11 +116,15 @@ async function importProject() {
   let caseNumber = "0";
 
   while (moreToProcess) {
-    let queryString = baseQueryString + `case:"${caseNumber}.."`;
+    let queryString = `case:"115754"`;
     let cases = await FogbugzAPI.search(queryString, 100, false);
 
     for (data of cases) {
-      await processCase(data)
+      try{
+      await processCase(data);
+    } catch(e){
+      console.log(e)
+    }
     }
 
     caseNumber = cases[cases.length - 1].id + 1
@@ -129,33 +133,35 @@ async function importProject() {
   }
 }
 
-// Loop throgh all cases with no parent
-
 async function processCase(data, parentId) {
-  let gitlabChildrenIDs = [];
+  let gitlabChildren = [];
+  let issue = await importCase(data, parentId);
 
-  let case = await importCase(data, parentId);
-  let childrenQuery = data.children.map((id) => `case:"${id}"`).join(' OR ');
-  let children = await FogbugzAPI.search(childrenQuery, 100, false);
+  if (data.children.length) {
+    let childrenQuery = data.children.map((id) => `case:"${id}"`).join(' OR ');
+    let children = await FogbugzAPI.search(childrenQuery, 100, false);
 
-  for (child of children) {
-    gitlabChildrenIDs.push(await processCase(child, case.id).id);
-  }
-
-  if(gitlabChildrenIDs.length){
-    let descriptionWithChildren = case.description;
-    let formattedChildrenIDs = gitlabChildrenIDs.map((id) => `#${id} `);
+    for (child of children) {
+      let glChild;
+      try {
+        glChild = await processCase(child, issue.iid);
+      } catch(e){
+        console.log(e);
+      }
+      
+      gitlabChildren.push(glChild);
+    }
 
     // FIXME: Just inject updated description instead of rebuilding
     let content = getOpenedComment(data.events);
-    let body = formatIssueBody(data, content, parentId, formattedChildrenIDs);
+    let body = formatIssueBody(data, content, parentId, gitlabChildren);
 
-    await GitlabAPI.projects.issues.edit(GLProject.id, case.id, {
+    await GitlabAPI.projects.issues.edit(GLProject.id, issue.iid, {
       description: body
-    })
+    });
   }
 
-  return case;
+  return issue;
 }
 
 async function initAPIandCache() {
@@ -176,7 +182,7 @@ async function getAllFogbugzUsers() {
 
 async function importCase(data, parentId) {
   let labels = []
-  let labelInfo = [data.category, data.priority];
+  let labelInfo = [data.category.name];
   let author = AdminUser.username
   let date = data.opened;
   let comments = data.events;
@@ -195,7 +201,7 @@ async function importCase(data, parentId) {
   }
 
   for (fogbugzLabel of labelInfo) {
-    if (fogbugzLabel) labels.push(await getLabel(fogbugzLabel.name));
+    labels.push(await getLabel(fogbugzLabel));
   }
 
   let issue = GLIssues.find(Issue => Issue.title.trim() === data.title.trim());
@@ -205,7 +211,7 @@ async function importCase(data, parentId) {
       title: data.title,
       description: body,
       author_id: author,
-      milestone_id: await getMilestone(data.milestone).id,
+      // milestone_id: await getMilestone(data.milestone).id,
       created_at: date.toDateString(),
       updated_at: data.lastUpdated,
       labels: labels.map(label => label.name).join(','),
@@ -217,9 +223,11 @@ async function importCase(data, parentId) {
       await importIssueComment(issue.iid, comment)
     }
 
-    issue = await GitlabAPI.projects.issues.edit(GLProject.id, issue.id, {
-      state: data.isOpen == 'true' ? 'opened' : 'closed',
-    });
+    if(!data.isOpen){
+      issue = await GitlabAPI.projects.issues.edit(GLProject.id, issue.iid, {
+        state_event: 'close',
+      });
+    }
 
     // Populate Cache
     GLIssues.push(issue);
@@ -238,7 +246,6 @@ async function populateCache() {
 }
 
 async function importIssueComment(issueId, comment) {
-
   let author = comment.person.name
   let content = formatContent(comment.html)
   let date = comment.date.toDateString()
@@ -304,25 +311,37 @@ function formatContent(content) {
   return linkifyIssues(escapeMarkdown(content))
 }
 
-function formatIssueBody(data, content, parentId) {
+function formatIssueBody(data, content = {}, parentId, childIssues) {
   let caseNumber = data.id
   let author = content.description
   let date = data.opened.toDateString()
   let assignee = data.assignee.name
-  let parentId = parentId
   let releaseNotes = data.releaseNotes
 
   let body = [];
-  let header = `${author} | Case: ${caseNumber}`
+  let header = `${author}` || 'Opened by unknown :confused:';
 
   body.push(`**${header}**`);
 
-  if (parentId) body.push(`*Parent: ${parentId}*`);
+  if (parentId) body.push(`*Parent: #${parentId}*`);
+
+  if (childIssues){
+    let formatChildren = '';
+
+    childIssues.forEach((child) => {
+      let closed = child.state === 'closed'? 'x' : '';
+
+      formatChildren+=`- [${closed}] [*#${child.iid} ${child.title}*](#${child.iid}) \n`
+    })
+
+    body.push(formatChildren);
+  }
+
   if (labelCheck(assignee)) body.push(`*Assigned to ${assignee}*`);
 
-  if (content.text != '' || releaseNotes != '') body.push('---');
-  if (content.text != '') { body.push(`formatContent(content.text)`); }
-  if (releaseNotes != '') { body.push(`<br>Release Notes: *${formatContent(content.text)}*`); }
+  if (content.text || releaseNotes) body.push('---');
+  if (content.text) body.push(formatContent(content.text));
+  if (releaseNotes) body.push(`\n Release Notes: *${formatContent(content.text)}*`);
 
   return body.join("\n\n");
 }
@@ -367,12 +386,10 @@ function formatUpdates(comment) {
   let updates = []
 
   if (comment.changes) updates.push(`*${linkifyIssues(escapeMarkdown(comment.changes.replace("\n", "")))}*`);
-  // if (comment.description) updates.push(`*${comment.description}*`);
 
   return updates;
 }
 
-// function formatIssueCommentBody(author, date, content, attachment){
 function formatIssueCommentBody(author, date, content) {
   let body = [];
 
@@ -402,6 +419,7 @@ function escapeMarkdown(str) {
   return str.replace("\n", "  \n")
 }
 
+// TODO Make this configurable
 function labelColours(name) {
   switch (name) {
     case 'Blocker':
