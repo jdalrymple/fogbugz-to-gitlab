@@ -11,34 +11,34 @@ let CONFIGURATION_USER = {
       "token": ""
     }
   },
-  "gitlab_project":{
+  "gitlab_project": {
     "name": temp_title,
     "description": "boring description",
     "issued_enabled": true
   },
-  "fogbugz_project":{
+  "fogbugz_project": {
     "name": "R&D",
     // "name": "Side Projects",
-    "exclude":{
+    "exclude": {
       "categories": ['Task'] // Add default empty string for this
     },
-    "custom_fields": ['storyxpoints', 'nextxsprint', 'nextxpoker',]
+    "custom_fields": ['storyxpoints', 'nextxsprint', 'nextxpoker', ]
   }
 }
 
 const CONFIGURATION_DEFAULT = {
   authentication: CONFIGURATION_USER.authentication,
-  gitlab_project:{
-      name: CONFIGURATION_USER.gitlab_project.name || 'New Gitlab Project',
-      description: CONFIGURATION_USER.gitlab_project.description || 'My Gitlab Project',
-      issues_enabled: CONFIGURATION_USER.gitlab_project.issues_enabled || true,
-      merge_requests_enabled: CONFIGURATION_USER.gitlab_project.merge_requests_enabled || true,
-      wiki_enabled: CONFIGURATION_USER.gitlab_project.wiki_enabled || false,
+  gitlab_project: {
+    name: CONFIGURATION_USER.gitlab_project.name || 'New Gitlab Project',
+    description: CONFIGURATION_USER.gitlab_project.description || 'My Gitlab Project',
+    issues_enabled: CONFIGURATION_USER.gitlab_project.issues_enabled || true,
+    merge_requests_enabled: CONFIGURATION_USER.gitlab_project.merge_requests_enabled || true,
+    wiki_enabled: CONFIGURATION_USER.gitlab_project.wiki_enabled || false,
   },
-  fogbugz_project:{
-    name:CONFIGURATION_USER.fogbugz_project.name,
-    exclude :{
-      categories: CONFIGURATION_USER.fogbugz_project.exclude.categories  || []
+  fogbugz_project: {
+    name: CONFIGURATION_USER.fogbugz_project.name,
+    exclude: {
+      categories: CONFIGURATION_USER.fogbugz_project.exclude.categories || []
     },
     custom_fields: CONFIGURATION_USER.fogbugz_project.custom_fields || []
   }
@@ -72,17 +72,17 @@ let GLProject;
 
 /*--------------------------------- Import ----------------------------------*/
 
-try{
+try {
   initAPIandCache()
-  .then(importProject)
-}catch(e){
+    .then(importProject)
+} catch (e) {
   console.log(e);
 }
 
 
 /*--------------------------------- Helper ----------------------------------*/
 
-async function importProject(){
+async function importProject() {
 
   // Create the GL Project
   await GitlabAPI.projects.create({
@@ -115,7 +115,7 @@ async function importProject(){
   let caseNumber = "0";
   let queryString = baseQueryString + `case:"${caseNumber}.."`;
 
-// Test cases
+  // Test cases
   // queryString = `case:"144813"`
   // queryString = `case:"108126"`
   // queryString = `case:"127305"`
@@ -124,21 +124,50 @@ async function importProject(){
   while (moreToProcess) {
     let cases = await FogbugzAPI.search(queryString, 100, false);
 
-    for (data of cases){
+    for (data of cases) {
       console.log("------------");
       console.log(data);
       await importCase(data)
     }
 
-    caseNumber = cases[cases.length-1].id + 1
+    caseNumber = cases[cases.length - 1].id + 1
     queryString = baseQueryString + `case:"${caseNumber}.."`;
     // moreToProcess = (cases.length < 100) ? false : true;
-    moreToProcess =  false;
+    moreToProcess = false;
   }
 }
 
-async function initAPIandCache(){
-  fogbugsConfig = Object.assign({} ,CONFIGURATION_DEFAULT.authentication.fogbugz);
+// Loop throgh all cases with no parent
+
+async function processCase(data, parentId) {
+  let gitlabChildrenIDs = [];
+
+  let case = await importCase(data, parentId);
+  let childrenQuery = data.children.map((id) => `case:"${id}"`).join(' OR ');
+  let children = await FogbugzAPI.search(childrenQuery, 100, false);
+
+  for (child of children) {
+    gitlabChildrenIDs.push(await processCase(child, case.id).id);
+  }
+
+  if(gitlabChildrenIDs.length){
+    let descriptionWithChildren = case.description;
+    let formattedChildrenIDs = gitlabChildrenIDs.map((id) => `#${id} `);
+
+    // FIXME: Just inject updated description instead of rebuilding
+    let content = getOpenedComment(data.events);
+    let body = formatIssueBody(data, content, parentId, formattedChildrenIDs);
+
+    await GitlabAPI.projects.issues.edit(GLProject.id, case.id, {
+      description: body
+    })
+  }
+
+  return case;
+}
+
+async function initAPIandCache() {
+  fogbugsConfig = Object.assign({}, CONFIGURATION_DEFAULT.authentication.fogbugz);
   fogbugsConfig.customFields = CONFIGURATION_DEFAULT.fogbugz_project.custom_fields;
 
   FogbugzAPI = await FogbugzJS(CONFIGURATION_DEFAULT.authentication.fogbugz);
@@ -147,21 +176,20 @@ async function initAPIandCache(){
   AdminUser = await GitlabAPI.users.current();
 }
 
-async function getAllFogbugzUsers(){
+async function getAllFogbugzUsers() {
   let users = await FogbugzAPI.users();
 
   return users.filter(user => { return user.deleted === false });
 }
 
-
-async function importCase(data) {
+async function importCase(data, parentId) {
   let labels = []
   let labelInfo = [data.category, data.priority];
   let author = AdminUser.username
   let date = data.opened;
   let comments = data.events;
   let content = getOpenedComment(comments);
-  let body = formatIssueBody(data, content);
+  let body = formatIssueBody(data, content, parentId);
 
   // If post is up for grabs or whatever add a label showing that
   // if (labelCheck(data.assignee.name)) { labelInfo.push(data.assignee.name) }
@@ -169,41 +197,46 @@ async function importCase(data) {
   if (data.nextxpoker) labelInfo.push("Next Poker")
   if (data.storyxpoints) labelInfo.push("Points: " + data.storyxpoints)
   if (data.tags.length) {
-    for (tag of data.tags){
+    for (tag of data.tags) {
       labelInfo.push(tag)
     }
   }
 
-  for (fogbugzLabel of labelInfo){
+  for (fogbugzLabel of labelInfo) {
     if (fogbugzLabel) labels.push(await getLabel(fogbugzLabel.name));
   }
 
   let issue = GLIssues.find(Issue => Issue.title.trim() === data.title.trim());
 
-  if(!issue){
-    issue = await GitlabAPI.projects.issues.create( GLProject.id, {
-        title: data.title,
-        description: body,
-        author_id: author,
-        state: data.isOpen == 'true' ? 'opened':'closed',
-        milestone_id: await getMilestone(data.milestone).id,
-        created_at: date.toDateString(),
-        updated_at: data.lastUpdated,
-        labels: labels.map(label => label.name).join(','),
-        weight: data.priority.id
+  if (!issue) {
+    issue = await GitlabAPI.projects.issues.create(GLProject.id, {
+      title: data.title,
+      description: body,
+      author_id: author,
+      milestone_id: await getMilestone(data.milestone).id,
+      created_at: date.toDateString(),
+      updated_at: data.lastUpdated,
+      labels: labels.map(label => label.name).join(','),
+      weight: data.priority.id
+    });
+
+    for (comment of comments) {
+      if (!comment.text) continue
+      await importIssueComment(issue.iid, comment)
+    }
+
+    issue = await GitlabAPI.projects.issues.edit(GLProject.id, issue.id, {
+      state: data.isOpen == 'true' ? 'opened' : 'closed',
     });
 
     // Populate Cache
     GLIssues.push(issue);
-
-    for (comment of comments){
-        if (!comment.text) continue
-        await importIssueComment(issue.iid, comment)
-    }
   }
+
+  return issue;
 }
 
-async function populateCache(){
+async function populateCache() {
   let temp = await GitlabAPI.labels.all(GLProject.id);
   GLLabels = temp;
   temp = await GitlabAPI.projects.milestones.all(GLProject.id);
@@ -220,44 +253,43 @@ async function importIssueComment(issueId, comment) {
   // let attachments = formatAttachments(comment.attachments)
 
   // if (!content && !attachments.length) return;
-  if(!content) return;
+  if (!content) return;
 
   let body = formatIssueCommentBody(author, date, content)
 
-  await GitlabAPI.projects.issues.notes.create( GLProject.id, issueId, {
-      created_at: date,
-      body: body
+  await GitlabAPI.projects.issues.notes.create(GLProject.id, issueId, {
+    created_at: date,
+    body: body
   });
 }
 
-async function getLabel(fogbugsLabelName){
+async function getLabel(fogbugsLabelName) {
   let label = GLLabels.find(label => label.name === fogbugsLabelName);
 
-  if(!label){
-      let glLabel = await GitlabAPI.labels.create( GLProject.id, {
-          name: fogbugsLabelName,
-          color: labelColours(fogbugsLabelName)
-      });
+  if (!label) {
+    let glLabel = await GitlabAPI.labels.create(GLProject.id, {
+      name: fogbugsLabelName,
+      color: labelColours(fogbugsLabelName)
+    });
 
-      GLLabels.push(glLabel);
+    GLLabels.push(glLabel);
 
-      label = glLabel;
+    label = glLabel;
   }
 
   return label;
 }
 
-function labelCheck(info){
+function labelCheck(info) {
   return (!((info === 'Up For Grabs') || (info === 'CLOSED')))
 }
 
-
-async function getMilestone(fogbugzMilestone){
+async function getMilestone(fogbugzMilestone) {
   let milestone = GLMilestones.find(milestone => milestone.title === fogbugzMilestone.name);
 
-  if(!milestone){
+  if (!milestone) {
     let GLMilestone = await GitlabAPI.projects.milestones.add(GLProject.id, fogbugzMilestone.name, {
-        due_date: fogbugzMilestone.end.toDateString()
+      due_date: fogbugzMilestone.end.toDateString()
     });
 
     GLMilestones.push(GLMilestone);
@@ -274,31 +306,31 @@ function getOpenedComment(comments) {
   )
 }
 
-function formatContent(content){
-  if(!content) return '';
+function formatContent(content) {
+  if (!content) return '';
 
   return linkifyIssues(escapeMarkdown(content))
 }
 
-function formatIssueBody(data, content){
+function formatIssueBody(data, content, parentId) {
   let caseNumber = data.id
   let author = content.description
   let date = data.opened.toDateString()
   let assignee = data.assignee.name
-  let parentId = data.parentId
-  let children = data.children
+  let parentId = parentId
   let releaseNotes = data.releaseNotes
 
   let body = [];
   let header = `${author} | Case: ${caseNumber}`
+
   body.push(`**${header}**`);
-  if (parentId) { body.push(`*Parent: ${parentId}*`) }
-  if (children[0]) { body.push(`*Children: ${children}*`) }
-  if (labelCheck(assignee)) { body.push(`*Assigned to ${assignee}*`); }
+
+  if (parentId) body.push(`*Parent: ${parentId}*`);
+  if (labelCheck(assignee)) body.push(`*Assigned to ${assignee}*`);
 
   if (content.text != '' || releaseNotes != '') body.push('---');
-  if (content.text != ''){ body.push(`formatContent(content.text)`); }
-  if (releaseNotes != ''){ body.push(`<br>Release Notes: *${formatContent(content.text)}*`); }
+  if (content.text != '') { body.push(`formatContent(content.text)`); }
+  if (releaseNotes != '') { body.push(`<br>Release Notes: *${formatContent(content.text)}*`); }
 
   return body.join("\n\n");
 }
@@ -339,7 +371,7 @@ function formatIssueBody(data, content){
 //   return `${configuration.athentication.fogbugz.url}/${url}&token=${FogbugzAPI.token}`
 // }
 
-function formatUpdates(comment){
+function formatUpdates(comment) {
   let updates = []
 
   if (comment.changes) updates.push(`*${linkifyIssues(escapeMarkdown(comment.changes.replace("\n", "")))}*`);
@@ -349,7 +381,7 @@ function formatUpdates(comment){
 }
 
 // function formatIssueCommentBody(author, date, content, attachment){
-function formatIssueCommentBody(author, date, content){
+function formatIssueCommentBody(author, date, content) {
   let body = [];
 
   body.push(`**By ${author} on ${date} (imported from FogBugz)**`);
@@ -364,12 +396,12 @@ function formatIssueCommentBody(author, date, content){
   return body.join("\n\n");
 }
 
-function linkifyIssues(str){
+function linkifyIssues(str) {
   str = str.replace(/([Ii]ssue) ([0-9]+)/, '\1 #\2');
   return str.replace(/([Cc]ase) ([0-9]+)/, '\1 #\2');
 }
 
-function escapeMarkdown(str){
+function escapeMarkdown(str) {
   str = str.replace(/^#/, "\\#")
   str = str.replace(/^-/, "\\-")
   str = str.replace("`", "\\~")
@@ -378,8 +410,8 @@ function escapeMarkdown(str){
   return str.replace("\n", "  \n")
 }
 
-function labelColours(name){
-  switch(name){
+function labelColours(name) {
+  switch (name) {
     case 'Blocker':
       return '#ff0000';
     case 'Crash':
