@@ -3,12 +3,12 @@ let temp_title = "testproject" + Math.floor(Math.random() * 200)
 let CONFIGURATION_USER = {
   "authentication": {
     "fogbugz": {
-      "url": "",
-      "user": "",
-      "password": ""
+      "url": "http://support.jonar.com/support/",
+      "user": "dylan@jonar.com",
+      "password": "jonar$1986"
     },
     "gitlab": {
-      "token": ""
+      "token": "LzWPyuuiPnmkCzjD_Fbs"
     }
   },
   "gitlab_project":{
@@ -125,9 +125,12 @@ async function importProject(){
     let cases = await FogbugzAPI.search(queryString, 100, false);
 
     for (data of cases){
-      console.log("------------");
-      console.log(data);
+      try{
+        console.log(data)
       await importCase(data)
+    }catch(e){
+      console.log(e);
+    }
     }
 
     caseNumber = cases[cases.length-1].id + 1
@@ -141,7 +144,12 @@ async function initAPIandCache(){
   fogbugsConfig = Object.assign({} ,CONFIGURATION_DEFAULT.authentication.fogbugz);
   fogbugsConfig.customFields = CONFIGURATION_DEFAULT.fogbugz_project.custom_fields;
 
-  FogbugzAPI = await FogbugzJS(CONFIGURATION_DEFAULT.authentication.fogbugz);
+  try{
+    FogbugzAPI = await FogbugzJS(fogbugsConfig);
+  } catch(e){
+    console.log(e)
+  }
+
   GitlabAPI = await Gitlab(CONFIGURATION_DEFAULT.authentication.gitlab);
   FBUsers = await getAllFogbugzUsers();
   AdminUser = await GitlabAPI.users.current();
@@ -213,7 +221,6 @@ async function populateCache(){
 }
 
 async function importIssueComment(issueId, comment) {
-
   let author = comment.person.name
   let content = formatContent(comment.html)
   let date = comment.date.toDateString()
