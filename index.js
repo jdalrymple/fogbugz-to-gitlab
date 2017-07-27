@@ -108,30 +108,22 @@ async function importProject() {
   })
 
   baseQueryString += `orderby:"case"`;
+  baseQueryString += 'parent:0';
 
   //Paginate
   let moreToProcess = true;
   let processDate = new Date(Date.now()).toLocaleDateString("en-US");
   let caseNumber = "0";
-  let queryString = baseQueryString + `case:"${caseNumber}.."`;
-
-  // Test cases
-  // queryString = `case:"144813"`
-  // queryString = `case:"108126"`
-  // queryString = `case:"127305"`
-  queryString = `case:"150371"`
 
   while (moreToProcess) {
+    let queryString = baseQueryString + `case:"${caseNumber}.."`;
     let cases = await FogbugzAPI.search(queryString, 100, false);
 
     for (data of cases) {
-      console.log("------------");
-      console.log(data);
-      await importCase(data)
+      await processCase(data)
     }
 
     caseNumber = cases[cases.length - 1].id + 1
-    queryString = baseQueryString + `case:"${caseNumber}.."`;
     // moreToProcess = (cases.length < 100) ? false : true;
     moreToProcess = false;
   }
