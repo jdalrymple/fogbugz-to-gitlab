@@ -217,15 +217,13 @@ function buildLabels(data){
     }
   }
 
-  for (let i = 0; i < labelList.length; i++) {
-    labelList[i] = labelList[i].charAt(0).toUpperCase() + labelList[i].slice(1).toLowerCase();
-  }
+  let list = labelList.map(camelCase)
 
-  if (data.nextxsprint) labelList.push("Next Sprint")
-  if (data.nextxpoker) labelList.push("Next Poker")
-  if (data.storyxpoints) labelList.push(`Points: ${data.storyxpoints}`)
+  if (data.nextxsprint) list.push("Next Sprint")
+  if (data.nextxpxoker) list.push("Next Poker")
+  if (data.storyxpoints) list.push(`Points: ${data.storyxpoints}`)
 
-  return labelList
+  return list
 }
 
 async function importIssueComment(issueId, comment) {
@@ -234,10 +232,9 @@ async function importIssueComment(issueId, comment) {
   let date = comment.date.toDateString()
   // let attachments = formatAttachments(comment.attachments)
 
-  // if (!content && !attachments.length) return;
   if(!content) return;
 
-  let body = formatIssueCommentBody(author, date, content)
+  let body = await formatIssueCommentBody(author, date, content, comment.attachments)
 
   await GitlabAPI.projects.issues.notes.create( GLProject.id, issueId, {
       created_at: date,
@@ -332,7 +329,7 @@ function formatIssueBody(data, content){
 }
 
 function formatAttachments(attachments){
-  if(!attachments) return [];
+  if(attachments.length) return [];
 
   let raw_attachments;
 
@@ -351,9 +348,14 @@ function formatAttachments(attachments){
 }
 
 async function formatAttachment(attachment){
-  let url = buildAttachmentURL(attachment.sURL);
+  let url = buildAttachmentURL(attachment.url);
+let res
+  try{
+    res = await GitlabAPI.projects.upload(GLProject.id, url)
 
-  let res = await GitlabAPI.Projects.upload(GLProject.id, url)
+  }catch(e){
+    console.log(e);
+  }
 
   if(!res) return null;
 
@@ -361,7 +363,7 @@ async function formatAttachment(attachment){
 }
 
 function buildAttachmentURL(url){
-  return `${configuration.athentication.fogbugz.url}/${url}&token=${FogbugzAPI.token}`
+  return `${CONFIGURATION_DEFAULT.authentication.fogbugz.url}/${url}&token=${FogbugzAPI.token}`
 }
 
 function formatUpdates(comment){
@@ -373,18 +375,20 @@ function formatUpdates(comment){
   return updates;
 }
 
-// function formatIssueCommentBody(author, date, content, attachment){
-function formatIssueCommentBody(author, date, content){
+async function formatIssueCommentBody(author, date, content, attachments){
+// function formatIssueCommentBody(author, date, content){
   let body = [];
 
   body.push(`**By ${author} on ${date} (imported from FogBugz)**`);
   body.push('---');
   body.push(content);
 
-  // for (attachment of attachments){
-  //   body.push('---');
-  //   body.push(attachment);
-  // }
+  console.log(attachments);
+  for (attachment of attachments){
+    body.push('---');
+    console.log(attachment);
+    body.push(await formatAttachment(attachment));
+  }
 
   return body.join("\n\n");
 }
@@ -431,4 +435,10 @@ function labelColours(name){
     default:
       return '#e2e2e2';
   }
+}
+
+function camelCase(inputString) {
+	return inputString.replace(/(?:^\s*\w|[A-Z]|\b\w)/g, function(letter, index) {
+			return index == 0 ? letter.toLowerCase() : letter.toUpperCase();
+		}).replace(/\s+/g, '');
 }
