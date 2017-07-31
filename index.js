@@ -14,13 +14,11 @@ let CONFIGURATION_USER = {
   "gitlab_project": {
     "name": temp_title,
     "description": "boring description",
-    "issued_enabled": true
-  },
-  "fogbugz_project": {
-    "name": "R&D",
-    // "name": "Side Projects",
-    "exclude": {
+    "exclude_creation": {
       "categories": ['Task'] // Add default empty string for this
+    },
+    "exclude_assignment": {
+      "milestone":['Undecided']
     },
     active_milestones: [
       "Sprint 100",
@@ -28,7 +26,25 @@ let CONFIGURATION_USER = {
       "Product Backlog",
       "Special Projects Backlog"
     ],
-    "custom_fields": ['storyxpoints', 'nextxsprint', 'nextxpoker', ]
+    "issued_enabled": true
+  },
+  "fogbugz_project": {
+    // "name": "R&D",
+    "name": "Side Projects",
+    "custom_fields": [
+      {
+        display_name: 'Points ${self}',
+        fogbugz_field: 'storyxpoints'
+      }, 
+      {
+        display_name: 'Next Sprint',
+        fogbugz_field: 'nextxsprint'
+      },
+      {
+        display_name: 'Next Poker',
+        fogbugz_field: 'nextxpoker'
+      }
+    ]
   }
 }
 
@@ -40,14 +56,13 @@ const CONFIGURATION_DEFAULT = {
     issues_enabled: CONFIGURATION_USER.gitlab_project.issues_enabled || true,
     merge_requests_enabled: CONFIGURATION_USER.gitlab_project.merge_requests_enabled || true,
     wiki_enabled: CONFIGURATION_USER.gitlab_project.wiki_enabled || false,
+    active_milestones: CONFIGURATION_USER.gitlab_project.active_milestones || [],
+    exclude_assignment: CONFIGURATION_USER.gitlab_project.exclude_assignment || {},
+    exclude_creation: CONFIGURATION_USER.gitlab_project.exclude_creation || {}
   },
   fogbugz_project: {
     name: CONFIGURATION_USER.fogbugz_project.name,
-    exclude: {
-      categories: CONFIGURATION_USER.fogbugz_project.exclude.categories || []
-    },
-    custom_fields: CONFIGURATION_USER.fogbugz_project.custom_fields || []
-    active_milestones: CONFIGURATION_USER.fogbugz_project.active_milestones || []
+    custom_fields: CONFIGURATION_USER.fogbugz_project.custom_fields || [],
   }
 }
 
@@ -115,9 +130,11 @@ async function importProject() {
   let baseQueryString = `project:"${CONFIGURATION_DEFAULT.fogbugz_project.name}"`;
 
   // //Exclude certain categories
-  CONFIGURATION_DEFAULT.fogbugz_project.exclude.categories.forEach(category => {
-    baseQueryString += `category:"${category}"`;
-  })
+  if(CONFIGURATION_DEFAULT.gitlab_project.exclude_creation.categories){
+    CONFIGURATION_DEFAULT.gitlab_project.exclude_creation.categories.forEach(category => {
+      baseQueryString += `category:"${category}"`;
+    })
+  }
 
   baseQueryString += `orderby:"case"`;
   baseQueryString += 'parent:0';
@@ -184,13 +201,16 @@ async function getAllFogbugzUsers() {
 }
 
 async function importCase(data, parentId) {
-  let labels = buildLabels(data) 
+  let labels = await buildLabels(data);
+
+  console.log(labels)
   let labelInfo = [data.category.name];
   let author = AdminUser.username
   let date = data.opened;
   let comments = data.events;
   let content = getOpenedComment(comments);
   let body = formatIssueBody(data, content, parentId);
+  let milestone = await getMilestone(data.milestone); 
 
   let issue = GLIssues.find(Issue => Issue.title.trim() === data.title.trim());
 
@@ -200,7 +220,7 @@ async function importCase(data, parentId) {
       description: body,
       author_id: author,
       state: data.isOpen == 'true' ? 'opened' : 'closed',
-      milestone_id: milestoneId.id,
+      milestone_id: CONFIGURATION_DEFAULT.gitlab_project.exclude_assignment.milestone.includes(milestone.name) ? undefined : milestone.id,
       created_at: date.toDateString(),
       updated_at: data.lastUpdated,
       labels: labels.map(label => label.name).join(','),
@@ -225,32 +245,35 @@ async function importCase(data, parentId) {
   return issue;
 }
 
-async function populateCache() {
-  let temp = await GitlabAPI.labels.all(GLProject.id);
-  GLLabels = temp;
-  temp = await GitlabAPI.projects.milestones.all(GLProject.id);
-  GLMilestones = temp;
-  temp = await GitlabAPI.projects.issues.all(GLProject.id);
-  GLIssues = temp
+async function populateCache() { 
+  GLLabels = await GitlabAPI.labels.all(GLProject.id);
+  GLMilestones = await GitlabAPI.projects.milestones.all(GLProject.id);
+  GLIssues = await GitlabAPI.projects.issues.all(GLProject.id)
 }
 
-function buildLabels(data) {
+async function buildLabels(data) {
   let labelList = []
 
-  labelList.push(data.category.name)
+  // Process Tags as Labels
   if (data.tags.length) {
     for (tag of data.tags) {
-      labelList.push(tag)
+      labelList.push(await getLabel(tag))
     }
   }
 
-  let list = labelList.map(pascaleCase)
+  // Process Category as labels
+  labelList.push(await getLabel(data.category.name))
 
-  if (data.nextxsprint) list.push("Next Sprint")
-  if (data.nextxpxoker) list.push("Next Poker")
-  if (data.storyxpoints) list.push(`Points: ${data.storyxpoints}`)
+  // Process Custom Fields as labels
+  for (customField of CONFIGURATION_USER.fogbugz_project.custom_fields){
+    labelList.push(await getLabel(processCustomField(customField,data)))
+  }
 
-  return list
+  return labelList
+}
+
+function processCustomField(customField, data){
+  return customField.display_name.replace('${self}', data[customField.fogbugz_field])
 }
 
 async function importIssueComment(issueId, comment) {
@@ -268,13 +291,14 @@ async function importIssueComment(issueId, comment) {
   });
 }
 
-async function getLabel(fogbugsLabelName) {
-  let label = GLLabels.find(label => label.name === fogbugsLabelName);
+async function getLabel(fogbugzLabelName) {
+  let cleanedFogbugzLabel = pascaleCase(fogbugzLabelName)
+  let label = GLLabels.find(label => label.name === cleanedFogbugzLabel);
 
   if (!label) {
     let glLabel = await GitlabAPI.labels.create(GLProject.id, {
-      name: fogbugsLabelName,
-      color: labelColours(fogbugsLabelName)
+      name: cleanedFogbugzLabel,
+      color: labelColours(cleanedFogbugzLabel)
     });
 
     GLLabels.push(glLabel);
@@ -283,10 +307,6 @@ async function getLabel(fogbugsLabelName) {
   }
 
   return label;
-}
-
-function labelCheck(info) {
-  return (!((info === 'Up For Grabs') || (info === 'CLOSED')))
 }
 
 async function getMilestone(fogbugzMilestone) {
@@ -306,7 +326,7 @@ async function getMilestone(fogbugzMilestone) {
 }
 
 async function closeMilestones() {
-  const activeMilestones = CONFIGURATION_DEFAULT.fogbugz_project.active_milestones
+  const activeMilestones = CONFIGURATION_DEFAULT.gitlab_project.active_milestones
 
   for (milestone of GLMilestones) {
     if (activeMilestones.indexOf(milestone) == -1) {
@@ -345,7 +365,7 @@ function formatIssueBody(data, content = {}, parentId, childIssues) {
     let formatChildren = '';
 
     childIssues.forEach((child) => {
-      let closed = child.state === 'closed'? 'x' : '';
+      let closed = child.state === 'closed'? 'x' : ' ';
 
       formatChildren+=`- [${closed}] [*#${child.iid} ${child.title}*](#${child.iid}) \n`
     })
@@ -353,7 +373,9 @@ function formatIssueBody(data, content = {}, parentId, childIssues) {
     body.push(formatChildren);
   }
 
-  if (labelCheck(assignee)) body.push(`*Assigned to ${assignee}*`);
+  if(!((assignee === 'Up For Grabs') || (assignee === 'CLOSED'))){
+    body.push(`*Assigned to ${assignee}*`);
+  }
 
   if (content.text || releaseNotes) body.push('---');
   if (content.text) body.push(formatContent(content.text));
@@ -437,6 +459,12 @@ function escapeMarkdown(str) {
   str = str.replace("\r", "")
 
   return str.replace("\n", "  \n")
+}
+
+function pascaleCase(inputString) { 
+  return inputString.replace(/(?:^\w|[A-Z]|\b\w)/g, function(letter, index) { 
+      return letter.toUpperCase(); 
+    }).replace(/\s+/g, ''); 
 }
 
 // TODO Make this configurable
