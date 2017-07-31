@@ -17,8 +17,8 @@ let CONFIGURATION_USER = {
     "issued_enabled": true
   },
   "fogbugz_project": {
-    // "name": "R&D",
-    "name": "Side Projects",
+    "name": "R&D",
+    // "name": "Side Projects",
     "exclude": {
       "categories": ['Task'] // Add default empty string for this
     },
@@ -83,7 +83,7 @@ let GLProject;
 
 /*--------------------------------- Import ----------------------------------*/
 
-try{
+try {
   initAPIandCache()
   .then(importProject)
   .then(closeMilestones)
@@ -120,43 +120,58 @@ async function importProject() {
   })
 
   baseQueryString += `orderby:"case"`;
+  baseQueryString += 'parent:0';
 
   //Paginate
   let moreToProcess = true;
   let processDate = new Date(Date.now()).toLocaleDateString("en-US");
   let caseNumber = "0";
-  let queryString = baseQueryString + `case:"${caseNumber}.."`;
-
-  // Test cases
-  // queryString = `case:"144813"`
-  // queryString = `case:"108126"`
-  // queryString = `case:"127305"`
-  queryString = `case:"150371"`
 
   while (moreToProcess) {
+    let queryString = `case:"115754"`;
     let cases = await FogbugzAPI.search(queryString, 100, false);
 
     for (data of cases) {
-      await importCase(data)
+      await processCase(data);
     }
 
     caseNumber = cases[cases.length - 1].id + 1
-    queryString = baseQueryString + `case:"${caseNumber}.."`;
     // moreToProcess = (cases.length < 100) ? false : true;
     moreToProcess = false;
   }
+}
+
+async function processCase(data, parentId) {
+  let gitlabChildren = [];
+  let issue = await importCase(data, parentId);
+
+  if (data.children.length) {
+    let childrenQuery = data.children.map((id) => `case:"${id}"`).join(' OR ');
+    let children = await FogbugzAPI.search(childrenQuery, 100, false);
+
+    for (child of children) {
+      let glChild = await processCase(child, issue.iid);
+      
+      gitlabChildren.push(glChild);
+    }
+
+    // FIXME: Just inject updated description instead of rebuilding
+    let content = getOpenedComment(data.events);
+    let body = formatIssueBody(data, content, parentId, gitlabChildren);
+
+    await GitlabAPI.projects.issues.edit(GLProject.id, issue.iid, {
+      description: body
+    });
+  }
+
+  return issue;
 }
 
 async function initAPIandCache() {
   fogbugsConfig = Object.assign({}, CONFIGURATION_DEFAULT.authentication.fogbugz);
   fogbugsConfig.customFields = CONFIGURATION_DEFAULT.fogbugz_project.custom_fields;
 
-  try {
-    FogbugzAPI = await FogbugzJS(fogbugsConfig);
-  } catch (e) {
-    console.log(e)
-  }
-
+  FogbugzAPI = await FogbugzJS(fogbugsConfig);
   GitlabAPI = await Gitlab(CONFIGURATION_DEFAULT.authentication.gitlab);
   FBUsers = await getAllFogbugzUsers();
   AdminUser = await GitlabAPI.users.current();
@@ -168,20 +183,14 @@ async function getAllFogbugzUsers() {
   return users.filter(user => { return user.deleted === false });
 }
 
-
-async function importCase(data) {
-  let labels = []
-  let labelList = buildLabels(data)
+async function importCase(data, parentId) {
+  let labels = buildLabels(data) 
+  let labelInfo = [data.category.name];
   let author = AdminUser.username
   let date = data.opened;
   let comments = data.events;
   let content = getOpenedComment(comments);
-  let body = formatIssueBody(data, content);
-  let milestoneId = await getMilestone(data.milestone);
-
-  for (label of labelList) {
-    labels.push(await getLabel(label));
-  }
+  let body = formatIssueBody(data, content, parentId);
 
   let issue = GLIssues.find(Issue => Issue.title.trim() === data.title.trim());
 
@@ -198,14 +207,22 @@ async function importCase(data) {
       weight: data.priority.id
     });
 
-    // Populate Cache
-    GLIssues.push(issue);
-
     for (comment of comments) {
       if (!comment.text) continue
       await importIssueComment(issue.iid, comment)
     }
+
+    if(!data.isOpen){
+      issue = await GitlabAPI.projects.issues.edit(GLProject.id, issue.iid, {
+        state_event: 'close',
+      });
+    }
+
+    // Populate Cache
+    GLIssues.push(issue);
   }
+
+  return issue;
 }
 
 async function populateCache() {
@@ -272,7 +289,6 @@ function labelCheck(info) {
   return (!((info === 'Up For Grabs') || (info === 'CLOSED')))
 }
 
-
 async function getMilestone(fogbugzMilestone) {
   let milestone = GLMilestones.find(milestone => milestone.title === fogbugzMilestone.name);
 
@@ -311,25 +327,37 @@ function formatContent(content) {
   return linkifyIssues(escapeMarkdown(content))
 }
 
-function formatIssueBody(data, content) {
+function formatIssueBody(data, content = {}, parentId, childIssues) {
   let caseNumber = data.id
   let author = content.description
   let date = data.opened.toDateString()
   let assignee = data.assignee.name
-  let parentId = data.parentId
-  let children = data.children
   let releaseNotes = data.releaseNotes
 
   let body = [];
-  let header = `${author} | Case: ${caseNumber}`
-  body.push(`**${header}**`);
-  if (parentId) { body.push(`*Parent: ${parentId}*`) }
-  if (children[0]) { body.push(`*Children: ${children}*`) }
-  if (labelCheck(assignee)) { body.push(`*Assigned to ${assignee}*`); }
+  let header = `${author}` || 'Opened by unknown :confused:';
 
-  if (content.text != '' || releaseNotes != '') body.push('---');
-  if (content.text != '') { body.push(formatContent(content.text)); }
-  if (releaseNotes != '') { body.push(`<br>**Release Notes** <br>*${formatContent(content.text)}*`); }
+  body.push(`**${header}**`);
+
+  if (parentId) body.push(`*Parent: #${parentId}*`);
+
+  if (childIssues){
+    let formatChildren = '';
+
+    childIssues.forEach((child) => {
+      let closed = child.state === 'closed'? 'x' : '';
+
+      formatChildren+=`- [${closed}] [*#${child.iid} ${child.title}*](#${child.iid}) \n`
+    })
+
+    body.push(formatChildren);
+  }
+
+  if (labelCheck(assignee)) body.push(`*Assigned to ${assignee}*`);
+
+  if (content.text || releaseNotes) body.push('---');
+  if (content.text) body.push(formatContent(content.text));
+  if (releaseNotes) body.push(`\n Release Notes: *${formatContent(content.text)}*`);
 
   return body.join("\n\n");
 }
@@ -411,6 +439,7 @@ function escapeMarkdown(str) {
   return str.replace("\n", "  \n")
 }
 
+// TODO Make this configurable
 function labelColours(name) {
   switch (name) {
     case 'Blocker':
@@ -439,10 +468,4 @@ function labelColours(name) {
     default:
       return '#e2e2e2';
   }
-}
-
-function pascaleCase(inputString) {
-  return inputString.replace(/(?:^\w|[A-Z]|\b\w)/g, function(letter, index) {
-      return letter.toUpperCase();
-    }).replace(/\s+/g, '');
 }
