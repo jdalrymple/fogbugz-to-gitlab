@@ -149,14 +149,14 @@ async function importProject() {
   // queryString = `case:"144813"`
   // queryString = `case:"108126"`
   // queryString = `case:"127305"`
-  queryString = `case:"62992"`
+  queryString = `case:"150371"`
   // queryString = `case:"115754"`
 
   while (moreToProcess) {
     let cases = await FogbugzAPI.search(queryString, 100, false); // TODO: Change back to 100
 
     for (data of cases) {
-      console.log(data);
+      // console.log(data);
       await processCase(data);
     }
 
@@ -194,7 +194,7 @@ async function processCase(data, parentId) {
 
 async function initAPIandCache() {
   fogbugsConfig = Object.assign({}, CONFIGURATION_DEFAULT.authentication.fogbugz);
-  fogbugsConfig.customFields = CONFIGURATION_DEFAULT.fogbugz_project.custom_fields;
+  fogbugsConfig.customFields = CONFIGURATION_DEFAULT.fogbugz_project.custom_fields.map(field => field.fogbugz_field)
 
   FogbugzAPI = await FogbugzJS(fogbugsConfig);
   GitlabAPI = await Gitlab(CONFIGURATION_DEFAULT.authentication.gitlab);
@@ -476,7 +476,7 @@ function escapeMarkdown(str) {
 function pascaleCase(inputString) {
   return inputString.replace(/(?:^\w|[A-Z]|\b\w)/g, function(letter, index) {
       return letter.toUpperCase();
-    }).replace(/\s+/g, '');
+    }).replace(/\s+/g, ' ');
 }
 
 // TODO Make this configurable
