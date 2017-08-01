@@ -1,71 +1,3 @@
-let temp_title = "testproject" + Math.floor(Math.random() * 200)
-
-let CONFIGURATION_USER = {
-  "authentication": {
-    "fogbugz": {
-      "url": "http://support.jonar.com/support/",
-      "user": "justin@jonar.com",
-      "password": "jamila"
-    },
-    "gitlab": {
-      "token": "4fMmEbKQk9GKTQ13YuPA"
-    }
-  },
-  "gitlab_project": {
-    "name": temp_title,
-    "description": "boring description",
-    "exclude_creation": {
-      "categories": ['Task'] // Add default empty string for this
-    },
-    "exclude_assignment": {
-      "milestone":['Undecided']
-    },
-    active_milestones: [
-      "Sprint 100",
-      "Short-Term Product Backlog",
-      "Product Backlog",
-      "Special Projects Backlog"
-    ],
-    "issued_enabled": true
-  },
-  "fogbugz_project": {
-    "name": "R&D",
-    // "name": "Side Projects",
-    "custom_fields": [
-      {
-        display_name: 'Points ${self}',
-        fogbugz_field: 'storyxpoints'
-      },
-      {
-        display_name: 'Next Sprint',
-        fogbugz_field: 'nextxsprint'
-      },
-      {
-        display_name: 'Next Poker',
-        fogbugz_field: 'nextxpoker'
-      }
-    ]
-  }
-}
-
-const CONFIGURATION_DEFAULT = {
-  authentication: CONFIGURATION_USER.authentication,
-  gitlab_project: {
-    name: CONFIGURATION_USER.gitlab_project.name || 'New Gitlab Project',
-    description: CONFIGURATION_USER.gitlab_project.description || 'My Gitlab Project',
-    issues_enabled: CONFIGURATION_USER.gitlab_project.issues_enabled || true,
-    merge_requests_enabled: CONFIGURATION_USER.gitlab_project.merge_requests_enabled || true,
-    wiki_enabled: CONFIGURATION_USER.gitlab_project.wiki_enabled || false,
-    active_milestones: CONFIGURATION_USER.gitlab_project.active_milestones || [],
-    exclude_assignment: CONFIGURATION_USER.gitlab_project.exclude_assignment || {},
-    exclude_creation: CONFIGURATION_USER.gitlab_project.exclude_creation || {}
-  },
-  fogbugz_project: {
-    name: CONFIGURATION_USER.fogbugz_project.name,
-    custom_fields: CONFIGURATION_USER.fogbugz_project.custom_fields || [],
-  }
-}
-
 const FogbugzJS = require('../fogbugz.js');
 const Promise = require('bluebird');
 const Gitlab = require('../node-gitlab-api');
@@ -73,11 +5,13 @@ const Tempy = require('tempy');
 const Path = require('path');
 const Request = require('request');
 const Fs = require('fs');
+const DefaultConfig = require('./default-config');
 
 let FogbugzAPI;
 let GitlabAPI;
 
 /*---------------------------------- Cache ----------------------------------*/
+
 // All Fogbugs Users
 let FBUsers = [];
 
@@ -196,10 +130,12 @@ async function initAPIandCache() {
   fogbugsConfig = Object.assign({}, CONFIGURATION_DEFAULT.authentication.fogbugz);
   fogbugsConfig.customFields = CONFIGURATION_DEFAULT.fogbugz_project.custom_fields.map(field => field.fogbugz_field)
 
-  FogbugzAPI = await FogbugzJS(fogbugsConfig);
-  GitlabAPI = await Gitlab(CONFIGURATION_DEFAULT.authentication.gitlab);
-  FBUsers = await getAllFogbugzUsers();
-  AdminUser = await GitlabAPI.users.current();
+  let FogbugzAPI = await FogbugzJS(fogbugsConfig);
+  let GitlabAPI = await Gitlab(CONFIGURATION_DEFAULT.authentication.gitlab);
+  let FBUsers = await getAllFogbugzUsers();
+  let AdminUser = await GitlabAPI.users.current();
+
+  return [FogbugzAPI, GitlabAPI, FBUsers, AdminUser]
 }
 
 async function getAllFogbugzUsers() {
@@ -459,25 +395,6 @@ async function formatIssueCommentBody(author, date, content, attachments) {
   return body.join("\n\n");
 }
 
-function linkifyIssues(str) {
-  str = str.replace(/([Ii]ssue) ([0-9]+)/, '\1 #\2');
-  return str.replace(/([Cc]ase) ([0-9]+)/, '\1 #\2');
-}
-
-function escapeMarkdown(str) {
-  str = str.replace(/^#/, "\\#")
-  str = str.replace(/^-/, "\\-")
-  str = str.replace("`", "\\~")
-  str = str.replace("\r", "")
-
-  return str.replace("\n", "  \n")
-}
-
-function pascaleCase(inputString) {
-  return inputString.replace(/(?:^\w|[A-Z]|\b\w)/g, function(letter, index) {
-      return letter.toUpperCase();
-    }).replace(/\s+/g, ' ');
-}
 
 // TODO Make this configurable
 function labelColours(name) {
