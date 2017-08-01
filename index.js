@@ -3,12 +3,12 @@ let temp_title = "testproject" + Math.floor(Math.random() * 200)
 let CONFIGURATION_USER = {
   "authentication": {
     "fogbugz": {
-      "url": "",
-      "user": "",
-      "password": ""
+      "url": "http://support.jonar.com/support/",
+      "user": "justin@jonar.com",
+      "password": "jamila"
     },
     "gitlab": {
-      "token": ""
+      "token": "4fMmEbKQk9GKTQ13YuPA"
     }
   },
   "gitlab_project": {
@@ -149,19 +149,18 @@ async function importProject() {
   // queryString = `case:"144813"`
   // queryString = `case:"108126"`
   // queryString = `case:"127305"`
-  queryString = `case:"150371"`
+  queryString = `case:"62992"`
   // queryString = `case:"115754"`
 
   while (moreToProcess) {
     let cases = await FogbugzAPI.search(queryString, 100, false); // TODO: Change back to 100
 
     for (data of cases) {
-      // console.log(data);
+      console.log(data);
       await processCase(data);
     }
 
     caseNumber = cases[cases.length - 1].id + 1
-    queryString = baseQueryString + `case:"${caseNumber}.."`;
     moreToProcess = (cases.length < 100) ? false : true;
     // moreToProcess = false;
   }
@@ -220,6 +219,12 @@ async function importCase(data, parentId) {
   let milestone = await getMilestone(data.milestone);
 
   let issue = GLIssues.find(Issue => Issue.title.trim() === data.title.trim());
+  let milestoneId = undefined
+
+  if(!CONFIGURATION_DEFAULT.gitlab_project.exclude_assignment.milestone.includes(data.milestone.name)){
+    milestoneId = data.milestone.id
+  }
+
 
   if (!issue) {
     issue = await GitlabAPI.projects.issues.create(GLProject.id, {
@@ -227,7 +232,7 @@ async function importCase(data, parentId) {
       description: body,
       author_id: author,
       state: data.isOpen == 'true' ? 'opened' : 'closed',
-      milestone_id: CONFIGURATION_DEFAULT.gitlab_project.exclude_assignment.milestone.includes(milestone.name) ? undefined : milestone.id,
+      milestone_id: milestoneId,
       created_at: date.toDateString(),
       updated_at: data.lastUpdated,
       labels: labels.map(label => label.name).join(','),
@@ -273,7 +278,7 @@ async function buildLabels(data) {
 
   // Process Custom Fields as labels
   for (customField of CONFIGURATION_USER.fogbugz_project.custom_fields){
-    labelList.push(await getLabel(processCustomField(customField,data)))
+    if(data[customField.fogbugz_field]) labelList.push(await getLabel(processCustomField(customField,data)))
   }
 
   return labelList
