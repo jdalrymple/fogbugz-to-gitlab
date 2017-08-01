@@ -202,8 +202,6 @@ async function getAllFogbugzUsers() {
 
 async function importCase(data, parentId) {
   let labels = await buildLabels(data);
-
-  console.log(labels)
   let labelInfo = [data.category.name];
   let author = AdminUser.username
   let date = data.opened;
@@ -273,6 +271,7 @@ async function buildLabels(data) {
 }
 
 function processCustomField(customField, data){
+  console.log(data[customField.fogbugz_field])
   return customField.display_name.replace('${self}', data[customField.fogbugz_field])
 }
 
