@@ -3,12 +3,12 @@ let temp_title = "testproject" + Math.floor(Math.random() * 200)
 let CONFIGURATION_USER = {
   "authentication": {
     "fogbugz": {
-      "url": "http://support.jonar.com/support/",
-      "user": "justin@jonar.com",
-      "password": "jamila"
+      "url": "",
+      "user": "",
+      "password": ""
     },
     "gitlab": {
-      "token": "LzWPyuuiPnmkCzjD_Fbs"
+      "token": ""
     }
   },
   "gitlab_project": {
@@ -29,13 +29,13 @@ let CONFIGURATION_USER = {
     "issued_enabled": true
   },
   "fogbugz_project": {
-    // "name": "R&D",
-    "name": "Side Projects",
+    "name": "R&D",
+    // "name": "Side Projects",
     "custom_fields": [
       {
         display_name: 'Points ${self}',
         fogbugz_field: 'storyxpoints'
-      }, 
+      },
       {
         display_name: 'Next Sprint',
         fogbugz_field: 'nextxsprint'
@@ -137,24 +137,33 @@ async function importProject() {
   }
 
   baseQueryString += `orderby:"case"`;
-  baseQueryString += 'parent:0';
+  baseQueryString += 'parent:"0"';
 
   //Paginate
   let moreToProcess = true;
   let processDate = new Date(Date.now()).toLocaleDateString("en-US");
   let caseNumber = "0";
+  let queryString = baseQueryString + `case:"${caseNumber}.."`;
+
+  // Test cases
+  // queryString = `case:"144813"`
+  // queryString = `case:"108126"`
+  // queryString = `case:"127305"`
+  queryString = `case:"150371"`
+  // queryString = `case:"115754"`
 
   while (moreToProcess) {
-    let queryString = `case:"115754"`;
-    let cases = await FogbugzAPI.search(queryString, 100, false);
+    let cases = await FogbugzAPI.search(queryString, 100, false); // TODO: Change back to 100
 
     for (data of cases) {
+      // console.log(data);
       await processCase(data);
     }
 
     caseNumber = cases[cases.length - 1].id + 1
-    // moreToProcess = (cases.length < 100) ? false : true;
-    moreToProcess = false;
+    queryString = baseQueryString + `case:"${caseNumber}.."`;
+    moreToProcess = (cases.length < 100) ? false : true;
+    // moreToProcess = false;
   }
 }
 
@@ -168,7 +177,7 @@ async function processCase(data, parentId) {
 
     for (child of children) {
       let glChild = await processCase(child, issue.iid);
-      
+
       gitlabChildren.push(glChild);
     }
 
@@ -208,7 +217,7 @@ async function importCase(data, parentId) {
   let comments = data.events;
   let content = getOpenedComment(comments);
   let body = formatIssueBody(data, content, parentId);
-  let milestone = await getMilestone(data.milestone); 
+  let milestone = await getMilestone(data.milestone);
 
   let issue = GLIssues.find(Issue => Issue.title.trim() === data.title.trim());
 
@@ -243,7 +252,7 @@ async function importCase(data, parentId) {
   return issue;
 }
 
-async function populateCache() { 
+async function populateCache() {
   GLLabels = await GitlabAPI.labels.all(GLProject.id);
   GLMilestones = await GitlabAPI.projects.milestones.all(GLProject.id);
   GLIssues = await GitlabAPI.projects.issues.all(GLProject.id)
@@ -271,7 +280,6 @@ async function buildLabels(data) {
 }
 
 function processCustomField(customField, data){
-  console.log(data[customField.fogbugz_field])
   return customField.display_name.replace('${self}', data[customField.fogbugz_field])
 }
 
@@ -460,10 +468,10 @@ function escapeMarkdown(str) {
   return str.replace("\n", "  \n")
 }
 
-function pascaleCase(inputString) { 
-  return inputString.replace(/(?:^\w|[A-Z]|\b\w)/g, function(letter, index) { 
-      return letter.toUpperCase(); 
-    }).replace(/\s+/g, ''); 
+function pascaleCase(inputString) {
+  return inputString.replace(/(?:^\w|[A-Z]|\b\w)/g, function(letter, index) {
+      return letter.toUpperCase();
+    }).replace(/\s+/g, '');
 }
 
 // TODO Make this configurable

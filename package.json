@@ -13,7 +13,7 @@
     "bluebird": "^3.5.0",
     "fogbugz.js": "0.0.33",
     "gitlab": "^1.7.1",
-    "node-gitlab-api": "^1.0.12",
+    "node-gitlab-api": "^1.0.13",
     "request": "^2.81.0",
     "tempy": "^0.1.0"
   }
