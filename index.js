@@ -3,19 +3,19 @@ let temp_title = "testproject" + Math.floor(Math.random() * 200)
 let CONFIGURATION_USER = {
   "authentication": {
     "fogbugz": {
-      "url": "http://support.jonar.com/support/",
-      "user": "justin@jonar.com",
-      "password": "jamila"
+      "url": "",
+      "user": "",
+      "password": ""
     },
     "gitlab": {
-      "token": "4fMmEbKQk9GKTQ13YuPA"
+      "token": ""
     }
   },
   "gitlab_project": {
     "name": temp_title,
     "description": "boring description",
     "exclude_creation": {
-      "categories": ['Task'] // Add default empty string for this
+      "categories": [] // Add default empty string for this
     },
     "exclude_assignment": {
       "milestone":['Undecided']
@@ -132,7 +132,7 @@ async function importProject() {
   // //Exclude certain categories
   if(CONFIGURATION_DEFAULT.gitlab_project.exclude_creation.categories){
     CONFIGURATION_DEFAULT.gitlab_project.exclude_creation.categories.forEach(category => {
-      baseQueryString += `category:"${category}"`;
+      baseQueryString += `-category:"${category}"`;
     })
   }
 
@@ -143,33 +143,38 @@ async function importProject() {
   let moreToProcess = true;
   let processDate = new Date(Date.now()).toLocaleDateString("en-US");
   let caseNumber = "0";
-  let queryString = baseQueryString + `case:"${caseNumber}.."`;
+
 
   // Test cases
   // queryString = `case:"144813"`
   // queryString = `case:"108126"`
   // queryString = `case:"127305"`
-  queryString = `case:"150371"`
+  // queryString = `case:"150371"`
   // queryString = `case:"115754"`
+  // let queryString = 'project:"R&D"orderby:"case"parent:"0"case:"89916.."'  // bombing
+  let queryString = `case:"92366"`
+
 
   while (moreToProcess) {
-    let cases = await FogbugzAPI.search(queryString, 100, false); // TODO: Change back to 100
+    // let queryString = baseQueryString + `case:"${caseNumber}.."`;
+    console.log(queryString);
+    let cases = await FogbugzAPI.search(queryString, 100, false);
 
     for (data of cases) {
-      // console.log(data);
+      console.log(data);
       await processCase(data);
     }
 
     caseNumber = cases[cases.length - 1].id + 1
-    moreToProcess = (cases.length < 100) ? false : true;
-    // moreToProcess = false;
+    // moreToProcess = (cases.length < 100) ? false : true;
+    moreToProcess = false;
   }
 }
 
 async function processCase(data, parentId) {
   let gitlabChildren = [];
   let issue = await importCase(data, parentId);
-
+  console.log("ISSUE");
   if (data.children.length) {
     let childrenQuery = data.children.map((id) => `case:"${id}"`).join(' OR ');
     let children = await FogbugzAPI.search(childrenQuery, 100, false);
@@ -179,6 +184,7 @@ async function processCase(data, parentId) {
 
       gitlabChildren.push(glChild);
     }
+    console.log("CHILDREN");
 
     // FIXME: Just inject updated description instead of rebuilding
     let content = getOpenedComment(data.events);
@@ -222,12 +228,21 @@ async function importCase(data, parentId) {
   let milestoneId = undefined
 
   if(!CONFIGURATION_DEFAULT.gitlab_project.exclude_assignment.milestone.includes(data.milestone.name)){
-    milestoneId = data.milestone.id
+    milestoneId = milestone.id
   }
 
+  console.log("SETUP");
+  // console.log(data.title);
+  // console.log(body);
+  // console.log(author);
+  // console.log( data.isOpen == 'true' ? 'opened' : 'closed');
+  // console.log(milestoneId);
+  // console.log(date.toDateString());
+  // console.log(data.lastUpdated);
+  // console.log();
 
   if (!issue) {
-    issue = await GitlabAPI.projects.issues.create(GLProject.id, {
+    let issueParams = {
       title: data.title,
       description: body,
       author_id: author,
@@ -237,12 +252,19 @@ async function importCase(data, parentId) {
       updated_at: data.lastUpdated,
       labels: labels.map(label => label.name).join(','),
       weight: data.priority.id
-    });
+    }
+    if (milestoneId) issueParams.milestone_id = milestoneId
+
+    issue = await GitlabAPI.projects.issues.create(GLProject.id, issueParams);
+
+    console.log("issue");
 
     for (comment of comments) {
       if (!comment.text) continue
       await importIssueComment(issue.iid, comment)
     }
+
+    console.log("comments");
 
     if(!data.isOpen){
       issue = await GitlabAPI.projects.issues.edit(GLProject.id, issue.iid, {
@@ -451,6 +473,7 @@ async function formatIssueCommentBody(author, date, content, attachments) {
   body.push('---');
   body.push(content);
 
+  console.log(attachments);
   for (attachment of attachments) {
     body.push('---');
     body.push(await formatAttachment(attachment));
@@ -485,10 +508,10 @@ function labelColours(name) {
     case 'Blocker':
       return '#ff0000';
     case 'Crash':
-      return '#ffcfcf';
+      return '#E91E63';
     case 'Major':
     case 'Epic':
-      return '#deffcf';
+      return '#FF9800';
     case 'Minor':
       return '#cfe9ff';
     case 'Bug':
@@ -496,13 +519,13 @@ function labelColours(name) {
     case 'Feature':
       return '#4CAF50';
     case 'User Story':
-      return '#3F51B5';
+      return '#FFEB3B';
     case 'Technical Task':
       return '#4CAF50';
     case 'Technical Debt':
-      return '#4b6dd0';
+      return '#795548';
     case 'Research Spike':
-      return '#009688';
+      return '#607D8B';
     case 'Task':
       return '#2196F3'
     default:
