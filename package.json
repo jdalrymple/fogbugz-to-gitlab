@@ -12,8 +12,8 @@
   "dependencies": {
     "bluebird": "^3.5.0",
     "fogbugz.js": "0.0.33",
-    "node-gitlab-api": "^1.0.13",
+    "node-gitlab-api": "^3.0.2",
     "request": "^2.81.0",
-    "tempy": "^0.1.0"
+    "tempy": "^0.2.1"
   }
 }
